@@ -47,10 +47,6 @@ export async function getLastRun() {
 
 const SHA_CHUNK_SIZE = 500;
 
-/**
- * Store commits, returning which are new vs already seen.
- * Uses SELECT-then-INSERT to know exactly which commits are new.
- */
 export async function storeCommits(
   commitInfos: CommitInfo[],
   runId: number
@@ -76,11 +72,9 @@ export async function storeCommits(
     }
   }
 
-  // Split into new vs existing
   const newCommits = commitInfos.filter((c) => !existingShas.has(c.sha));
   const existingCount = commitInfos.length - newCommits.length;
 
-  // Insert only new commits
   if (newCommits.length > 0) {
     const values = newCommits.map((c) => ({
       sha: c.sha,
@@ -99,7 +93,6 @@ export async function storeCommits(
       jiraKeys: c.jiraKeys.length > 0 ? c.jiraKeys.join(",") : null,
     }));
 
-    // Insert in chunks to stay within limits
     for (let i = 0; i < values.length; i += SHA_CHUNK_SIZE) {
       const chunk = values.slice(i, i + SHA_CHUNK_SIZE);
       await db.insert(commits).values(chunk);
@@ -235,16 +228,12 @@ export async function getTotalCommitCount(): Promise<number> {
 
 // ── Ticket Cache ─────────────────────────────────────────────────────────────
 
-/**
- * Return ticket keys that are either not in DB or have a stale last_fetched.
- */
 export async function getStaleTicketKeys(jiraKeys: string[], maxAgeMinutes = 60): Promise<string[]> {
   if (jiraKeys.length === 0) return [];
 
   const db = getDb();
   const cutoff = new Date(Date.now() - maxAgeMinutes * 60_000).toISOString();
 
-  // Find keys that exist and are fresh
   const freshKeys = new Set<string>();
   for (let i = 0; i < jiraKeys.length; i += SHA_CHUNK_SIZE) {
     const chunk = jiraKeys.slice(i, i + SHA_CHUNK_SIZE);
@@ -263,9 +252,6 @@ export async function getStaleTicketKeys(jiraKeys: string[], maxAgeMinutes = 60)
   return jiraKeys.filter((k) => !freshKeys.has(k));
 }
 
-/**
- * Insert or update tickets in the DB.
- */
 export async function upsertTickets(ticketData: TicketData[]): Promise<void> {
   if (ticketData.length === 0) return;
 
@@ -316,16 +302,12 @@ export async function upsertTickets(ticketData: TicketData[]): Promise<void> {
         });
     }
 
-    // Store status changes from changelog
     if (t.statusChanges && t.statusChanges.length > 0) {
       await upsertTicketStatusChanges(t.jiraKey, t.statusChanges);
     }
   }
 }
 
-/**
- * Fetch cached tickets by their Jira keys.
- */
 export async function getTicketsByKeys(jiraKeys: string[]) {
   if (jiraKeys.length === 0) return [];
 
@@ -392,10 +374,6 @@ export async function getTicketSummariesForRun(runId: number) {
     .orderBy(ticketSummaries.jiraKey, ticketSummaries.repo);
 }
 
-/**
- * Get the most recent summary for a given jiraKey + repo.
- * Used for incremental analysis — builds on previous day's analysis.
- */
 export async function getLatestTicketSummary(jiraKey: string, repo: string) {
   const db = getDb();
   const [row] = await db
@@ -407,9 +385,6 @@ export async function getLatestTicketSummary(jiraKey: string, repo: string) {
   return row;
 }
 
-/**
- * Get all summaries for a ticket across all runs (history).
- */
 export async function getTicketSummariesByKey(jiraKey: string) {
   const db = getDb();
   return await db
@@ -419,9 +394,6 @@ export async function getTicketSummariesByKey(jiraKey: string) {
     .orderBy(desc(ticketSummaries.id));
 }
 
-/**
- * Batch lookup: get latest summary per ticket for a set of keys.
- */
 export async function getTicketSummariesByKeys(jiraKeys: string[]) {
   if (jiraKeys.length === 0) return [];
   const db = getDb();
@@ -437,7 +409,6 @@ export async function getTicketSummariesByKeys(jiraKeys: string[]) {
     results.push(...rows);
   }
 
-  // Deduplicate: keep only the latest per jiraKey+repo
   const seen = new Set<string>();
   return results.filter((r) => {
     const key = `${r.jiraKey}|${r.repo}`;
@@ -590,7 +561,7 @@ export async function getMemberTicketSummaries(emails: string[], limit = 5) {
       .limit(limit);
     results.push(...rows);
   }
-  // Deduplicate and sort by createdAt desc, limit
+
   const seen = new Set<number>();
   return results
     .filter((r) => {
@@ -623,7 +594,6 @@ export async function getTicketCommitCounts(jiraKeys: string[]): Promise<Record<
   if (jiraKeys.length === 0) return {};
   const db = getDb();
 
-  // Single pass: fetch all commits that have jira_keys set
   const rows = await db
     .select({ jiraKeys: commits.jiraKeys })
     .from(commits)
@@ -705,10 +675,6 @@ export async function getDistinctAuthors(): Promise<string[]> {
 
 // ── Referenced Tickets (for dashboard) ────────────────────────────────────────
 
-/**
- * Get only tickets that are referenced by stored commits (excluding test-repo),
- * grouped by status.
- */
 export async function getReferencedTicketsGrouped(): Promise<Record<string, (typeof tickets.$inferSelect)[]>> {
   const db = getDb();
 
@@ -729,7 +695,6 @@ export async function getReferencedTicketsGrouped(): Promise<Record<string, (typ
 
   if (referencedKeys.size === 0) return {};
 
-  // Look up those keys in tickets table
   const keyArray = [...referencedKeys];
   const ticketRows: (typeof tickets.$inferSelect)[] = [];
   for (let i = 0; i < keyArray.length; i += SHA_CHUNK_SIZE) {
@@ -741,7 +706,6 @@ export async function getReferencedTicketsGrouped(): Promise<Record<string, (typ
     ticketRows.push(...found);
   }
 
-  // Group by status
   const grouped: Record<string, (typeof tickets.$inferSelect)[]> = {};
   for (const t of ticketRows) {
     const status = t.status ?? "Unknown";
@@ -765,7 +729,6 @@ export async function getBranchesWithCommits(filter?: {
 }): Promise<BranchWithCommitsResult[]> {
   const db = getDb();
 
-  // Get active branches excluding test-repo
   const conditions = [
     sql`${branches.repo} != 'test-repo'`,
     eq(branches.isActive, 1),
@@ -782,7 +745,6 @@ export async function getBranchesWithCommits(filter?: {
   const results: BranchWithCommitsResult[] = [];
 
   for (const branch of branchRows) {
-    // Get commits for this branch
     const branchCommits = await db
       .select()
       .from(commits)
@@ -792,7 +754,6 @@ export async function getBranchesWithCommits(filter?: {
       ))
       .orderBy(desc(commits.timestamp));
 
-    // Look up ticket if branch has a jira key
     let ticket: (typeof tickets.$inferSelect) | null = null;
     if (branch.jiraKey) {
       const [row] = await db
@@ -975,7 +936,6 @@ export async function getSprintBranches(sprintId: number): Promise<BranchWithCom
 
   const keySet = new Set(ticketKeys);
 
-  // Get branches whose jiraKey is in sprint tickets
   const allBranchRows = await db
     .select()
     .from(branches)
@@ -1285,10 +1245,6 @@ export async function getSprintTicketsGrouped(sprintId: number): Promise<Record<
 
 // ── Pull Request Queries ──────────────────────────────────────────────────
 
-/**
- * Upsert pull requests into the pull_requests table.
- * Returns array of { id, prId } for each upserted row.
- */
 export async function upsertPullRequests(
   repo: string,
   prs: PullRequestFullData[]
@@ -1355,9 +1311,6 @@ export async function upsertPullRequests(
   return results;
 }
 
-/**
- * Store PR activity events with dedup by (pullRequestId, timestamp, activityType, actorName).
- */
 export async function storePRActivities(
   prRowId: number,
   repo: string,
@@ -1400,11 +1353,6 @@ export async function storePRActivities(
   return inserted;
 }
 
-/**
- * Find PRs needing activity refresh:
- * - OPEN PRs where lastActivityFetched is older than maxAgeMins
- * - MERGED/DECLINED PRs where lastActivityFetched is null (never fetched)
- */
 export async function getStaleActivityPRs(
   repo: string,
   maxAgeMins = 30
@@ -1437,10 +1385,6 @@ export async function getStaleActivityPRs(
   return rows;
 }
 
-/**
- * Compute time to first review (approval/comment/request_changes by non-author).
- * Returns minutes or null.
- */
 export async function computeTimeToFirstReview(prRowId: number): Promise<number | null> {
   const db = getDb();
   const [pr] = await db.select({ createdAt: pullRequests.createdAt, authorName: pullRequests.authorName })
@@ -1466,9 +1410,6 @@ export async function computeTimeToFirstReview(prRowId: number): Promise<number 
   return Math.round((reviewed - created) / 60_000);
 }
 
-/**
- * Compute time to merge: PR createdAt to first MERGED state activity or PR updatedAt if state=MERGED.
- */
 export async function computeTimeToMerge(prRowId: number): Promise<number | null> {
   const db = getDb();
   const [pr] = await db.select({ createdAt: pullRequests.createdAt, state: pullRequests.state, updatedAt: pullRequests.updatedAt })
@@ -1495,9 +1436,6 @@ export async function computeTimeToMerge(prRowId: number): Promise<number | null
   return Math.round((mergedAt - created) / 60_000);
 }
 
-/**
- * Count review rounds: cycles of request_changes → update (new commits).
- */
 export async function computeReviewRounds(prRowId: number): Promise<number> {
   const db = getDb();
   const activities = await db
@@ -1522,9 +1460,6 @@ export async function computeReviewRounds(prRowId: number): Promise<number> {
   return rounds;
 }
 
-/**
- * Compute and cache all PR metrics on the pull_requests row.
- */
 export async function computeAndCachePRMetrics(prRowId: number): Promise<void> {
   const db = getDb();
   const ttfr = await computeTimeToFirstReview(prRowId);
@@ -1739,7 +1674,7 @@ export async function getReviewerStats(repo?: string) {
   }>();
 
   // Track first review per PR per reviewer
-  const firstReviewPerPR = new Map<string, number>(); // "prId|reviewer" -> timestamp_ms
+  const firstReviewPerPR = new Map<string, number>(); 
 
   for (const a of activities) {
     const reviewer = a.actorName ?? "Unknown";
@@ -1831,7 +1766,6 @@ export async function upsertTicketStatusChanges(jiraKey: string, changes: Status
   const db = getDb();
 
   for (const c of changes) {
-    // Dedup by (jiraKey, changedAt, toStatus)
     const [existing] = await db
       .select({ id: ticketStatusChanges.id })
       .from(ticketStatusChanges)
@@ -2307,7 +2241,6 @@ export async function getStandupData(
 
     // ── Today ──────────────────────────────────────────────────────
 
-    // Active tickets: in progress/in review that the member has commits on
     const inProgressStatuses = ["In Progress", "In Development", "Development", "In Review", "Code Review", "Review"];
     const activeTickets: StandupMemberData["today"]["activeTickets"] = [];
     const activeTicketKeySet = new Set<string>();
