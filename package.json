@@ -1,0 +1,36 @@
+{
+  "name": "codingsummary",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "scan": "bun run scan.ts",
+    "scan:repo": "bun run scan.ts --repo",
+    "db:push": "supabase db push",
+    "db:reset": "supabase db reset",
+    "db:studio": "bunx drizzle-kit studio",
+    "db:test": "bun run db-test.ts",
+    "web": "bun --hot web.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.13",
+    "@types/react-dom": "^19.2.3",
+    "bun-plugin-tailwind": "^0.1.2",
+    "drizzle-kit": "^0.31.8",
+    "tailwindcss": "^4.1.18"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.1",
+    "postgres": "^3.4.8",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "simple-git": "^3.30.0",
+    "smol-toml": "^1.6.0"
+  }
+}
