@@ -195,7 +195,7 @@ Four tabs with pure SVG charts:
 - **Commit Velocity** — commits per member over time (line chart)
 - **Code Churn** — daily additions vs deletions (area chart)
 - **PR Cycle Time** — time to first review, time to merge, review rounds (bar chart)
-- **Sprint Burndown** — ticket completion over sprint duration (area chart)
+- **Sprint Burndown** — ticket completion over sprint duration (area chart). Commit counts scoped to sprint branches only
 
 ### Sprint Report (`#sprint-summary`)
 
