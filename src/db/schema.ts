@@ -65,7 +65,7 @@ export const branches = pgTable(
     prUpdatedAt: text("pr_updated_at"),
   },
   (table) => [
-    index("idx_branches_repo_name").on(table.repo, table.name),
+    uniqueIndex("idx_branches_repo_name_unique").on(table.repo, table.name),
   ]
 );
 
