@@ -116,23 +116,26 @@ export async function updateBranches(
     .set({ isActive: 0 })
     .where(eq(branches.repo, repoName));
 
+  // Step 2: Batch-fetch all existing branches for this repo
+  const existingRows = await db
+    .select()
+    .from(branches)
+    .where(eq(branches.repo, repoName));
+  const existingMap = new Map(existingRows.map((r) => [r.name, r]));
+
   const newBranches: string[] = [];
   const updatedBranches: string[] = [];
 
-  // Step 2: Upsert current branches
-  for (const b of branchInfos) {
-    // Extract jira key from branch name
+  // Pre-compute jiraKey for each branch (avoid duplicate regex extraction)
+  const branchesWithKeys = branchInfos.map((b) => {
     const jiraMatch = b.name.match(/([A-Z][A-Z0-9]+-(?!0+\b)\d+)/);
-    const jiraKey = jiraMatch ? jiraMatch[1] : null;
+    return { ...b, jiraKey: jiraMatch ? jiraMatch[1]! : null };
+  });
 
-    // Check if branch already exists
-    const [existing] = await db
-      .select()
-      .from(branches)
-      .where(and(eq(branches.repo, repoName), eq(branches.name, b.name)));
-
+  // Update existing branches (per-row since each gets different values, but no per-row SELECT)
+  for (const b of branchesWithKeys) {
+    const existing = existingMap.get(b.name);
     if (existing) {
-      // Update existing branch
       await db.update(branches)
         .set({
           lastSeen: now,
@@ -140,29 +143,38 @@ export async function updateBranches(
           lastCommitDate: b.lastCommitDate,
           authorEmail: b.lastCommitAuthorEmail,
           isActive: 1,
-          jiraKey,
+          jiraKey: b.jiraKey,
         })
         .where(eq(branches.id, existing.id));
       updatedBranches.push(b.name);
     } else {
-      // Insert new branch
-      await db.insert(branches)
-        .values({
-          repo: repoName,
-          name: b.name,
-          authorEmail: b.lastCommitAuthorEmail,
-          firstSeen: now,
-          lastSeen: now,
-          lastCommitSha: b.lastCommitSha,
-          lastCommitDate: b.lastCommitDate,
-          isActive: 1,
-          jiraKey,
-        });
       newBranches.push(b.name);
     }
   }
 
-  // Step 3: Find branches that are still inactive (gone from remote)
+  // Batch insert new branches
+  const newValues = branchesWithKeys
+    .filter((b) => !existingMap.has(b.name))
+    .map((b) => ({
+      repo: repoName,
+      name: b.name,
+      authorEmail: b.lastCommitAuthorEmail,
+      firstSeen: now,
+      lastSeen: now,
+      lastCommitSha: b.lastCommitSha,
+      lastCommitDate: b.lastCommitDate,
+      isActive: 1,
+      jiraKey: b.jiraKey,
+    }));
+
+  if (newValues.length > 0) {
+    for (let i = 0; i < newValues.length; i += SHA_CHUNK_SIZE) {
+      const chunk = newValues.slice(i, i + SHA_CHUNK_SIZE);
+      await db.insert(branches).values(chunk);
+    }
+  }
+
+  // Step 4: Find branches that are still inactive (gone from remote)
   const goneRows = await db
     .select({ name: branches.name })
     .from(branches)
@@ -258,13 +270,47 @@ export async function upsertTickets(ticketData: TicketData[]): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
 
-  for (const t of ticketData) {
-    const [existing] = await db
-      .select({ id: tickets.id })
+  // Batch-fetch existing ticket IDs by jiraKey
+  const allKeys = ticketData.map((t) => t.jiraKey);
+  const existingMap = new Map<string, number>();
+  for (let i = 0; i < allKeys.length; i += SHA_CHUNK_SIZE) {
+    const chunk = allKeys.slice(i, i + SHA_CHUNK_SIZE);
+    const rows = await db
+      .select({ id: tickets.id, jiraKey: tickets.jiraKey })
       .from(tickets)
-      .where(eq(tickets.jiraKey, t.jiraKey));
+      .where(inArray(tickets.jiraKey, chunk));
+    for (const r of rows) existingMap.set(r.jiraKey, r.id);
+  }
 
-    if (existing) {
+  // Batch insert new tickets
+  const newTickets = ticketData.filter((t) => !existingMap.has(t.jiraKey));
+  if (newTickets.length > 0) {
+    const values = newTickets.map((t) => ({
+      jiraKey: t.jiraKey,
+      summary: t.summary,
+      description: t.description,
+      status: t.status,
+      assignee: t.assignee,
+      priority: t.priority,
+      ticketType: t.ticketType,
+      parentKey: t.parentKey,
+      subtasks: t.subtasks,
+      labels: t.labels,
+      commentsJson: t.commentsJson,
+      lastFetched: now,
+      lastJiraUpdated: t.lastJiraUpdated,
+      dataJson: t.dataJson,
+    }));
+    for (let i = 0; i < values.length; i += SHA_CHUNK_SIZE) {
+      const chunk = values.slice(i, i + SHA_CHUNK_SIZE);
+      await db.insert(tickets).values(chunk);
+    }
+  }
+
+  // Update existing tickets (per-row since each gets different values, but no per-row SELECT)
+  for (const t of ticketData) {
+    const existingId = existingMap.get(t.jiraKey);
+    if (existingId !== undefined) {
       await db.update(tickets)
         .set({
           summary: t.summary,
@@ -281,30 +327,19 @@ export async function upsertTickets(ticketData: TicketData[]): Promise<void> {
           lastJiraUpdated: t.lastJiraUpdated,
           dataJson: t.dataJson,
         })
-        .where(eq(tickets.id, existing.id));
-    } else {
-      await db.insert(tickets)
-        .values({
-          jiraKey: t.jiraKey,
-          summary: t.summary,
-          description: t.description,
-          status: t.status,
-          assignee: t.assignee,
-          priority: t.priority,
-          ticketType: t.ticketType,
-          parentKey: t.parentKey,
-          subtasks: t.subtasks,
-          labels: t.labels,
-          commentsJson: t.commentsJson,
-          lastFetched: now,
-          lastJiraUpdated: t.lastJiraUpdated,
-          dataJson: t.dataJson,
-        });
+        .where(eq(tickets.id, existingId));
     }
+  }
 
+  // Collect all status changes and batch upsert
+  const allStatusChanges: { jiraKey: string; changes: StatusChange[] }[] = [];
+  for (const t of ticketData) {
     if (t.statusChanges && t.statusChanges.length > 0) {
-      await upsertTicketStatusChanges(t.jiraKey, t.statusChanges);
+      allStatusChanges.push({ jiraKey: t.jiraKey, changes: t.statusChanges });
     }
+  }
+  for (const { jiraKey, changes } of allStatusChanges) {
+    await upsertTicketStatusChanges(jiraKey, changes);
   }
 }
 
@@ -507,6 +542,57 @@ export async function getMemberStats(emails: string[]) {
   return { commitCount, activeBranchCount, lastActivity: lastCommit?.timestamp ?? null };
 }
 
+export async function getAllMemberStats(
+  team: { name: string; emails: string[] }[]
+): Promise<{ name: string; emails: string[]; commitCount: number; activeBranchCount: number; lastActivity: string | null }[]> {
+  const db = getDb();
+  const allEmails = team.flatMap((m) => m.emails).filter((e) => e);
+  if (allEmails.length === 0) {
+    return team.map((m) => ({ name: m.name, emails: m.emails, commitCount: 0, activeBranchCount: 0, lastActivity: null }));
+  }
+
+  // Batch: commit counts per email
+  const commitCountRows = await db
+    .select({ email: commits.authorEmail, count: count() })
+    .from(commits)
+    .where(and(inArray(commits.authorEmail, allEmails), TEST_REPO_FILTER))
+    .groupBy(commits.authorEmail);
+  const commitCounts = new Map(commitCountRows.map((r) => [r.email, r.count]));
+
+  // Batch: active branch counts per email
+  const branchCountRows = await db
+    .select({ email: branches.authorEmail, count: count() })
+    .from(branches)
+    .where(and(
+      inArray(branches.authorEmail, allEmails),
+      eq(branches.isActive, 1),
+      sql`${branches.repo} != 'test-repo'`,
+    ))
+    .groupBy(branches.authorEmail);
+  const branchCounts = new Map(branchCountRows.map((r) => [r.email, r.count]));
+
+  // Batch: last activity per email
+  const lastActivityRows = await db
+    .select({ email: commits.authorEmail, lastTs: sql<string>`MAX(${commits.timestamp})` })
+    .from(commits)
+    .where(and(inArray(commits.authorEmail, allEmails), TEST_REPO_FILTER))
+    .groupBy(commits.authorEmail);
+  const lastActivities = new Map(lastActivityRows.map((r) => [r.email, r.lastTs]));
+
+  return team.map((m) => {
+    let commitCount = 0;
+    let activeBranchCount = 0;
+    let lastActivity: string | null = null;
+    for (const email of m.emails) {
+      commitCount += commitCounts.get(email) ?? 0;
+      activeBranchCount += branchCounts.get(email) ?? 0;
+      const la = lastActivities.get(email);
+      if (la && (!lastActivity || la > lastActivity)) lastActivity = la;
+    }
+    return { name: m.name, emails: m.emails, commitCount, activeBranchCount, lastActivity };
+  });
+}
+
 export async function getMemberCommits(
   emails: string[],
   page: number,
@@ -550,26 +636,22 @@ export async function getMemberBranches(emails: string[]) {
 export async function getMemberTicketSummaries(emails: string[], limit = 5) {
   if (emails.length === 0) return [];
   const db = getDb();
-  // Find ticket summaries where any of the emails appear in authorEmails
-  const results: (typeof ticketSummaries.$inferSelect)[] = [];
-  for (const email of emails) {
-    const rows = await db
-      .select()
-      .from(ticketSummaries)
-      .where(like(ticketSummaries.authorEmails, `%${email}%`))
-      .orderBy(desc(ticketSummaries.createdAt))
-      .limit(limit);
-    results.push(...rows);
-  }
+  // Find ticket summaries where any of the emails appear in authorEmails — single query with OR
+  const likeConditions = emails.map((email) => like(ticketSummaries.authorEmails, `%${email}%`));
+  const rows = await db
+    .select()
+    .from(ticketSummaries)
+    .where(or(...likeConditions))
+    .orderBy(desc(ticketSummaries.createdAt))
+    .limit(limit * emails.length); // fetch enough to dedup
 
   const seen = new Set<number>();
-  return results
+  return rows
     .filter((r) => {
       if (seen.has(r.id)) return false;
       seen.add(r.id);
       return true;
     })
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, limit);
 }
 
@@ -594,19 +676,24 @@ export async function getTicketCommitCounts(jiraKeys: string[]): Promise<Record<
   if (jiraKeys.length === 0) return {};
   const db = getDb();
 
-  const rows = await db
-    .select({ jiraKeys: commits.jiraKeys })
-    .from(commits)
-    .where(isNotNull(commits.jiraKeys));
-
+  // Use LIKE queries to count commits per ticket key instead of loading all commits
   const counts: Record<string, number> = {};
-  const keySet = new Set(jiraKeys);
-  for (const row of rows) {
-    if (!row.jiraKeys) continue;
-    for (const key of row.jiraKeys.split(",")) {
-      const trimmed = key.trim();
-      if (keySet.has(trimmed)) {
-        counts[trimmed] = (counts[trimmed] ?? 0) + 1;
+  for (let i = 0; i < jiraKeys.length; i += SHA_CHUNK_SIZE) {
+    const chunk = jiraKeys.slice(i, i + SHA_CHUNK_SIZE);
+    const likeConditions = chunk.map((key) => like(commits.jiraKeys, `%${key}%`));
+    const rows = await db
+      .select({ jiraKeys: commits.jiraKeys })
+      .from(commits)
+      .where(and(isNotNull(commits.jiraKeys), or(...likeConditions)));
+
+    const keySet = new Set(chunk);
+    for (const row of rows) {
+      if (!row.jiraKeys) continue;
+      for (const key of row.jiraKeys.split(",")) {
+        const trimmed = key.trim();
+        if (keySet.has(trimmed)) {
+          counts[trimmed] = (counts[trimmed] ?? 0) + 1;
+        }
       }
     }
   }
@@ -742,31 +829,47 @@ export async function getBranchesWithCommits(filter?: {
     .where(and(...conditions))
     .orderBy(desc(branches.lastSeen));
 
-  const results: BranchWithCommitsResult[] = [];
+  if (branchRows.length === 0) return [];
 
-  for (const branch of branchRows) {
-    const branchCommits = await db
+  // Batch fetch all commits for these branches using OR conditions (chunked)
+  const branchPairs = branchRows.map((b) => ({ repo: b.repo, name: b.name }));
+  const allCommits: (typeof commits.$inferSelect)[] = [];
+  for (let i = 0; i < branchPairs.length; i += SHA_CHUNK_SIZE) {
+    const chunk = branchPairs.slice(i, i + SHA_CHUNK_SIZE);
+    const orConditions = chunk.map((bp) => and(eq(commits.repo, bp.repo), eq(commits.branch, bp.name)));
+    const rows = await db
       .select()
       .from(commits)
-      .where(and(
-        eq(commits.repo, branch.repo),
-        eq(commits.branch, branch.name),
-      ))
+      .where(or(...orConditions))
       .orderBy(desc(commits.timestamp));
-
-    let ticket: (typeof tickets.$inferSelect) | null = null;
-    if (branch.jiraKey) {
-      const [row] = await db
-        .select()
-        .from(tickets)
-        .where(eq(tickets.jiraKey, branch.jiraKey));
-      ticket = row ?? null;
-    }
-
-    results.push({ branch, branchCommits, ticket });
+    allCommits.push(...rows);
   }
 
-  return results;
+  // Index commits by repo::branch
+  const commitsByBranch = new Map<string, (typeof commits.$inferSelect)[]>();
+  for (const c of allCommits) {
+    const key = `${c.repo}::${c.branch}`;
+    let arr = commitsByBranch.get(key);
+    if (!arr) { arr = []; commitsByBranch.set(key, arr); }
+    arr.push(c);
+  }
+
+  // Batch fetch all tickets by jiraKey
+  const jiraKeys = [...new Set(branchRows.map((b) => b.jiraKey).filter((k): k is string => !!k))];
+  const ticketMap = new Map<string, typeof tickets.$inferSelect>();
+  if (jiraKeys.length > 0) {
+    for (let i = 0; i < jiraKeys.length; i += SHA_CHUNK_SIZE) {
+      const chunk = jiraKeys.slice(i, i + SHA_CHUNK_SIZE);
+      const ticketRows = await db.select().from(tickets).where(inArray(tickets.jiraKey, chunk));
+      for (const t of ticketRows) ticketMap.set(t.jiraKey, t);
+    }
+  }
+
+  return branchRows.map((branch) => ({
+    branch,
+    branchCommits: commitsByBranch.get(`${branch.repo}::${branch.name}`) ?? [],
+    ticket: branch.jiraKey ? ticketMap.get(branch.jiraKey) ?? null : null,
+  }));
 }
 
 // ── Sprint Queries ──────────────────────────────────────────────────────────
@@ -786,13 +889,38 @@ export async function upsertSprints(data: SprintInsert[]): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
 
-  for (const s of data) {
-    const [existing] = await db
-      .select({ id: sprints.id })
+  // Batch-fetch existing sprints by jiraSprintId
+  const allJiraIds = data.map((s) => s.jiraSprintId);
+  const existingMap = new Map<number, number>();
+  for (let i = 0; i < allJiraIds.length; i += SHA_CHUNK_SIZE) {
+    const chunk = allJiraIds.slice(i, i + SHA_CHUNK_SIZE);
+    const rows = await db
+      .select({ id: sprints.id, jiraSprintId: sprints.jiraSprintId })
       .from(sprints)
-      .where(eq(sprints.jiraSprintId, s.jiraSprintId));
+      .where(inArray(sprints.jiraSprintId, chunk));
+    for (const r of rows) existingMap.set(r.jiraSprintId, r.id);
+  }
 
-    if (existing) {
+  // Batch insert new sprints
+  const newSprints = data.filter((s) => !existingMap.has(s.jiraSprintId));
+  if (newSprints.length > 0) {
+    const values = newSprints.map((s) => ({
+      jiraSprintId: s.jiraSprintId,
+      boardId: s.boardId,
+      name: s.name,
+      state: s.state,
+      startDate: s.startDate,
+      endDate: s.endDate,
+      goal: s.goal,
+      lastFetched: now,
+    }));
+    await db.insert(sprints).values(values);
+  }
+
+  // Update existing sprints (per-row, no per-row SELECT)
+  for (const s of data) {
+    const existingId = existingMap.get(s.jiraSprintId);
+    if (existingId !== undefined) {
       await db.update(sprints)
         .set({
           name: s.name,
@@ -802,19 +930,7 @@ export async function upsertSprints(data: SprintInsert[]): Promise<void> {
           goal: s.goal,
           lastFetched: now,
         })
-        .where(eq(sprints.id, existing.id));
-    } else {
-      await db.insert(sprints)
-        .values({
-          jiraSprintId: s.jiraSprintId,
-          boardId: s.boardId,
-          name: s.name,
-          state: s.state,
-          startDate: s.startDate,
-          endDate: s.endDate,
-          goal: s.goal,
-          lastFetched: now,
-        });
+        .where(eq(sprints.id, existingId));
     }
   }
 }
@@ -823,15 +939,20 @@ export async function upsertSprintTickets(sprintId: number, jiraKeys: string[]):
   if (jiraKeys.length === 0) return;
   const db = getDb();
 
-  for (const key of jiraKeys) {
-    const [existing] = await db
-      .select({ id: sprintTickets.id })
-      .from(sprintTickets)
-      .where(and(eq(sprintTickets.sprintId, sprintId), eq(sprintTickets.jiraKey, key)));
+  // Batch-fetch existing sprint-ticket pairs
+  const existingRows = await db
+    .select({ jiraKey: sprintTickets.jiraKey })
+    .from(sprintTickets)
+    .where(eq(sprintTickets.sprintId, sprintId));
+  const existingKeys = new Set(existingRows.map((r) => r.jiraKey));
 
-    if (!existing) {
-      await db.insert(sprintTickets)
-        .values({ sprintId, jiraKey: key });
+  // Bulk insert missing ones
+  const newKeys = jiraKeys.filter((k) => !existingKeys.has(k));
+  if (newKeys.length > 0) {
+    const values = newKeys.map((key) => ({ sprintId, jiraKey: key }));
+    for (let i = 0; i < values.length; i += SHA_CHUNK_SIZE) {
+      const chunk = values.slice(i, i + SHA_CHUNK_SIZE);
+      await db.insert(sprintTickets).values(chunk);
     }
   }
 }
@@ -936,70 +1057,60 @@ export async function getSprintBranches(sprintId: number): Promise<BranchWithCom
 
   const keySet = new Set(ticketKeys);
 
-  const allBranchRows = await db
-    .select()
-    .from(branches)
-    .where(and(
-      sql`${branches.repo} != 'test-repo'`,
-      isNotNull(branches.jiraKey),
-    ))
-    .orderBy(desc(branches.lastSeen));
-
-  const branchRows = allBranchRows.filter((b) => b.jiraKey && keySet.has(b.jiraKey));
-
-  const results: BranchWithCommitsResult[] = [];
-  for (const branch of branchRows) {
-    const branchCommits = await db
+  // Fetch branches with sprint ticket keys using IN clause
+  const allBranchRows: (typeof branches.$inferSelect)[] = [];
+  for (let i = 0; i < ticketKeys.length; i += SHA_CHUNK_SIZE) {
+    const chunk = ticketKeys.slice(i, i + SHA_CHUNK_SIZE);
+    const rows = await db
       .select()
-      .from(commits)
-      .where(and(eq(commits.repo, branch.repo), eq(commits.branch, branch.name)))
-      .orderBy(desc(commits.timestamp));
-
-    let ticket: (typeof tickets.$inferSelect) | null = null;
-    if (branch.jiraKey) {
-      const [row] = await db.select().from(tickets).where(eq(tickets.jiraKey, branch.jiraKey));
-      ticket = row ?? null;
-    }
-
-    results.push({ branch, branchCommits, ticket });
+      .from(branches)
+      .where(and(
+        sql`${branches.repo} != 'test-repo'`,
+        inArray(branches.jiraKey, chunk),
+      ))
+      .orderBy(desc(branches.lastSeen));
+    allBranchRows.push(...rows);
   }
 
-  return results;
+  if (allBranchRows.length === 0) return [];
+
+  // Batch fetch all commits for these branches
+  const branchPairs = allBranchRows.map((b) => ({ repo: b.repo, name: b.name }));
+  const allCommits: (typeof commits.$inferSelect)[] = [];
+  for (let i = 0; i < branchPairs.length; i += SHA_CHUNK_SIZE) {
+    const chunk = branchPairs.slice(i, i + SHA_CHUNK_SIZE);
+    const orConditions = chunk.map((bp) => and(eq(commits.repo, bp.repo), eq(commits.branch, bp.name)));
+    const rows = await db.select().from(commits).where(or(...orConditions)).orderBy(desc(commits.timestamp));
+    allCommits.push(...rows);
+  }
+
+  const commitsByBranch = new Map<string, (typeof commits.$inferSelect)[]>();
+  for (const c of allCommits) {
+    const key = `${c.repo}::${c.branch}`;
+    let arr = commitsByBranch.get(key);
+    if (!arr) { arr = []; commitsByBranch.set(key, arr); }
+    arr.push(c);
+  }
+
+  // Batch fetch all tickets
+  const jiraKeys = [...new Set(allBranchRows.map((b) => b.jiraKey).filter((k): k is string => !!k))];
+  const ticketMap = new Map<string, typeof tickets.$inferSelect>();
+  if (jiraKeys.length > 0) {
+    for (let i = 0; i < jiraKeys.length; i += SHA_CHUNK_SIZE) {
+      const chunk = jiraKeys.slice(i, i + SHA_CHUNK_SIZE);
+      const ticketRows = await db.select().from(tickets).where(inArray(tickets.jiraKey, chunk));
+      for (const t of ticketRows) ticketMap.set(t.jiraKey, t);
+    }
+  }
+
+  return allBranchRows.map((branch) => ({
+    branch,
+    branchCommits: commitsByBranch.get(`${branch.repo}::${branch.name}`) ?? [],
+    ticket: branch.jiraKey ? ticketMap.get(branch.jiraKey) ?? null : null,
+  }));
 }
 
 // ── Daily Activity Queries ──────────────────────────────────────────────────
-
-export async function getTeamDailyActivity(
-  team: { name: string; emails: string[] }[],
-  date: string
-): Promise<{ member: { name: string; emails: string[] }; commits: (typeof commits.$inferSelect)[]; branches: string[] }[]> {
-  const db = getDb();
-  const nextDate = new Date(new Date(date).getTime() + 86_400_000).toISOString().split("T")[0]!;
-
-  const results = [];
-  for (const member of team) {
-    if (member.emails.length === 0) {
-      results.push({ member, commits: [], branches: [] });
-      continue;
-    }
-
-    const dayCommits = await db
-      .select()
-      .from(commits)
-      .where(and(
-        inArray(commits.authorEmail, member.emails),
-        gte(commits.timestamp, date),
-        lte(commits.timestamp, nextDate + "T00:00:00.000Z"),
-        TEST_REPO_FILTER,
-      ))
-      .orderBy(desc(commits.timestamp));
-
-    const branchNames = [...new Set(dayCommits.map((c) => c.branch))];
-
-    results.push({ member, commits: dayCommits, branches: branchNames });
-  }
-  return results;
-}
 
 export interface EnrichedBranchDetail {
   name: string;
@@ -1023,6 +1134,72 @@ export async function getEnrichedDailyActivity(
   const db = getDb();
   const nextDate = new Date(new Date(date).getTime() + 86_400_000).toISOString().split("T")[0]!;
 
+  // 1. Batch fetch ALL team member commits for this day in one query
+  const allEmails = team.flatMap((m) => m.emails).filter((e) => e);
+  if (allEmails.length === 0) {
+    return team.map((member) => ({ member, commits: [], branches: [], tickets: [], ticketSummaries: [] }));
+  }
+
+  const allDayCommits = await db
+    .select()
+    .from(commits)
+    .where(and(
+      inArray(commits.authorEmail, allEmails),
+      gte(commits.timestamp, date),
+      lte(commits.timestamp, nextDate + "T00:00:00.000Z"),
+      TEST_REPO_FILTER,
+    ))
+    .orderBy(desc(commits.timestamp));
+
+  // Index commits by email
+  const commitsByEmail = new Map<string, (typeof commits.$inferSelect)[]>();
+  for (const c of allDayCommits) {
+    let arr = commitsByEmail.get(c.authorEmail);
+    if (!arr) { arr = []; commitsByEmail.set(c.authorEmail, arr); }
+    arr.push(c);
+  }
+
+  // 2. Collect all unique branch keys and batch fetch branch rows
+  const allBranchKeys = new Set<string>();
+  for (const c of allDayCommits) {
+    allBranchKeys.add(`${c.repo}::${c.branch}`);
+  }
+  const branchPairs = [...allBranchKeys].map((k) => {
+    const [repo, name] = k.split("::");
+    return { repo: repo!, name: name! };
+  }).filter((bp) => bp.repo && bp.name);
+
+  const branchMap = new Map<string, typeof branches.$inferSelect>();
+  if (branchPairs.length > 0) {
+    for (let i = 0; i < branchPairs.length; i += SHA_CHUNK_SIZE) {
+      const chunk = branchPairs.slice(i, i + SHA_CHUNK_SIZE);
+      const orConds = chunk.map((bp) => and(eq(branches.repo, bp.repo), eq(branches.name, bp.name)));
+      const rows = await db.select().from(branches).where(or(...orConds));
+      for (const r of rows) branchMap.set(`${r.repo}::${r.name}`, r);
+    }
+  }
+
+  // 3. Collect ALL ticket keys (from commits + branches) and batch fetch tickets
+  const allTicketKeySet = new Set<string>();
+  for (const c of allDayCommits) {
+    if (c.jiraKeys) {
+      for (const k of c.jiraKeys.split(",")) allTicketKeySet.add(k.trim());
+    }
+  }
+  for (const b of branchMap.values()) {
+    if (b.jiraKey) allTicketKeySet.add(b.jiraKey);
+  }
+  const allTicketKeys = [...allTicketKeySet];
+  const ticketMap = new Map<string, typeof tickets.$inferSelect>();
+  if (allTicketKeys.length > 0) {
+    const ticketRows = await getTicketsByKeys(allTicketKeys);
+    for (const t of ticketRows) ticketMap.set(t.jiraKey, t);
+  }
+
+  // 4. Batch fetch all ticket summaries for all ticket keys
+  const allCandidateSummaries = allTicketKeys.length > 0 ? await getTicketSummariesByKeys(allTicketKeys) : [];
+
+  // 5. Assemble per-member results
   const results: EnrichedDailyActivity[] = [];
   for (const member of team) {
     if (member.emails.length === 0) {
@@ -1030,74 +1207,53 @@ export async function getEnrichedDailyActivity(
       continue;
     }
 
-    // 1. Get day's commits
-    const dayCommits = await db
-      .select()
-      .from(commits)
-      .where(and(
-        inArray(commits.authorEmail, member.emails),
-        gte(commits.timestamp, date),
-        lte(commits.timestamp, nextDate + "T00:00:00.000Z"),
-        TEST_REPO_FILTER,
-      ))
-      .orderBy(desc(commits.timestamp));
+    const dayCommits: (typeof commits.$inferSelect)[] = [];
+    for (const email of member.emails) {
+      const emailCommits = commitsByEmail.get(email);
+      if (emailCommits) dayCommits.push(...emailCommits);
+    }
 
     if (dayCommits.length === 0) {
       results.push({ member, commits: [], branches: [], tickets: [], ticketSummaries: [] });
       continue;
     }
 
-    // 2. For each unique branch, look up branch row + linked ticket
-    const branchKeys = [...new Set(dayCommits.map((c) => `${c.repo}::${c.branch}`))];
+    // Build branch details from pre-fetched data
+    const memberBranchKeys = [...new Set(dayCommits.map((c) => `${c.repo}::${c.branch}`))];
     const branchDetails: EnrichedBranchDetail[] = [];
-    for (const key of branchKeys) {
+    for (const key of memberBranchKeys) {
       const [repo, branchName] = key.split("::");
       if (!repo || !branchName) continue;
-      const [branchRow] = await db
-        .select()
-        .from(branches)
-        .where(and(eq(branches.repo, repo), eq(branches.name, branchName)));
-
-      let ticket: (typeof tickets.$inferSelect) | null = null;
-      if (branchRow?.jiraKey) {
-        const [ticketRow] = await db.select().from(tickets).where(eq(tickets.jiraKey, branchRow.jiraKey));
-        ticket = ticketRow ?? null;
-      }
-
-      branchDetails.push({ name: branchName, repo, branch: branchRow ?? null, ticket });
+      const branchRow = branchMap.get(key) ?? null;
+      const ticket = branchRow?.jiraKey ? ticketMap.get(branchRow.jiraKey) ?? null : null;
+      branchDetails.push({ name: branchName, repo, branch: branchRow, ticket });
     }
 
-    // 3. Collect additional tickets from commits.jiraKeys
-    const ticketKeySet = new Set<string>();
+    // Collect tickets for this member
+    const memberTicketKeySet = new Set<string>();
     for (const c of dayCommits) {
       if (c.jiraKeys) {
-        for (const k of c.jiraKeys.split(",")) ticketKeySet.add(k.trim());
+        for (const k of c.jiraKeys.split(",")) memberTicketKeySet.add(k.trim());
       }
     }
-    // Also add branch-linked ticket keys
     for (const bd of branchDetails) {
-      if (bd.branch?.jiraKey) ticketKeySet.add(bd.branch.jiraKey);
+      if (bd.branch?.jiraKey) memberTicketKeySet.add(bd.branch.jiraKey);
     }
-    const ticketKeys = [...ticketKeySet];
-    const ticketRows = ticketKeys.length > 0 ? await getTicketsByKeys(ticketKeys) : [];
+    const ticketRows = [...memberTicketKeySet].map((k) => ticketMap.get(k)).filter((t): t is typeof tickets.$inferSelect => !!t);
 
-    // 4. Find ticket summaries whose commitShas overlap with this day's commits
+    // Match summaries to this member's commits
     const dayShas = new Set(dayCommits.map((c) => c.sha));
     const matchedSummaries: (typeof ticketSummaries.$inferSelect)[] = [];
-
-    // Look up ticket summaries by the ticket keys found
-    if (ticketKeys.length > 0) {
-      const candidateSummaries = await getTicketSummariesByKeys(ticketKeys);
-      for (const ts of candidateSummaries) {
-        if (!ts.commitShas) continue;
-        try {
-          const shas: string[] = JSON.parse(ts.commitShas);
-          if (shas.some((sha) => dayShas.has(sha))) {
-            matchedSummaries.push(ts);
-          }
-        } catch {
-          // commitShas not valid JSON, skip
+    for (const ts of allCandidateSummaries) {
+      if (!ts.commitShas) continue;
+      if (!memberTicketKeySet.has(ts.jiraKey)) continue;
+      try {
+        const shas: string[] = JSON.parse(ts.commitShas);
+        if (shas.some((sha) => dayShas.has(sha))) {
+          matchedSummaries.push(ts);
         }
+      } catch {
+        // commitShas not valid JSON, skip
       }
     }
 
@@ -1146,7 +1302,14 @@ export async function getTicketLifecycleMetrics(jiraKeys?: string[]): Promise<Ti
   const db = getDb();
   const now = Date.now();
 
-  // Single scan of commits table
+  // When jiraKeys filter is provided, use LIKE to narrow the query instead of full table scan
+  const conditions = [TEST_REPO_FILTER, isNotNull(commits.jiraKeys)];
+  if (jiraKeys && jiraKeys.length > 0) {
+    // Build LIKE conditions in chunks to narrow results at SQL level
+    const likeConditions = jiraKeys.map((key) => like(commits.jiraKeys, `%${key}%`));
+    conditions.push(or(...likeConditions)!);
+  }
+
   const rows = await db
     .select({
       jiraKeys: commits.jiraKeys,
@@ -1155,7 +1318,7 @@ export async function getTicketLifecycleMetrics(jiraKeys?: string[]): Promise<Ti
       repo: commits.repo,
     })
     .from(commits)
-    .where(and(TEST_REPO_FILTER, isNotNull(commits.jiraKeys)));
+    .where(and(...conditions));
 
   // Aggregate per jira key
   const agg = new Map<string, {
@@ -1187,16 +1350,19 @@ export async function getTicketLifecycleMetrics(jiraKeys?: string[]): Promise<Ti
     }
   }
 
-  // Branch counts per jira key
+  // Branch counts per jira key — filter to relevant keys when provided
+  const branchConditions = [sql`${branches.repo} != 'test-repo'`, isNotNull(branches.jiraKey)];
+  if (jiraKeys && jiraKeys.length > 0) {
+    branchConditions.push(inArray(branches.jiraKey, jiraKeys));
+  }
   const branchRows = await db
     .select({ jiraKey: branches.jiraKey })
     .from(branches)
-    .where(and(sql`${branches.repo} != 'test-repo'`, isNotNull(branches.jiraKey)));
+    .where(and(...branchConditions));
 
   const branchCounts = new Map<string, number>();
   for (const br of branchRows) {
     if (!br.jiraKey) continue;
-    if (keyFilter && !keyFilter.has(br.jiraKey)) continue;
     branchCounts.set(br.jiraKey, (branchCounts.get(br.jiraKey) ?? 0) + 1);
   }
 
@@ -1251,41 +1417,31 @@ export async function upsertPullRequests(
 ): Promise<{ id: number; prId: number }[]> {
   if (prs.length === 0) return [];
   const db = getDb();
+
+  // Batch-fetch existing PRs by (repo, prId)
+  const allPrIds = prs.map((p) => p.prId);
+  const existingMap = new Map<number, number>();
+  for (let i = 0; i < allPrIds.length; i += SHA_CHUNK_SIZE) {
+    const chunk = allPrIds.slice(i, i + SHA_CHUNK_SIZE);
+    const rows = await db
+      .select({ id: pullRequests.id, prId: pullRequests.prId })
+      .from(pullRequests)
+      .where(and(eq(pullRequests.repo, repo), inArray(pullRequests.prId, chunk)));
+    for (const r of rows) existingMap.set(r.prId, r.id);
+  }
+
   const results: { id: number; prId: number }[] = [];
 
-  for (const pr of prs) {
-    const [existing] = await db
-      .select({ id: pullRequests.id })
-      .from(pullRequests)
-      .where(and(eq(pullRequests.repo, repo), eq(pullRequests.prId, pr.prId)));
-
-    const reviewerNames = pr.participants
-      .filter((p) => p.role === "REVIEWER")
-      .map((p) => p.displayName);
-
-    if (existing) {
-      await db.update(pullRequests)
-        .set({
-          title: pr.prTitle,
-          description: pr.description,
-          state: pr.prState,
-          url: pr.prUrl,
-          sourceBranch: pr.sourceBranch,
-          targetBranch: pr.prTargetBranch,
-          authorName: pr.authorName,
-          reviewers: JSON.stringify(reviewerNames),
-          approvals: pr.prApprovals,
-          commentCount: pr.commentCount,
-          taskCount: pr.taskCount,
-          mergeCommitSha: pr.mergeCommitSha,
-          updatedAt: pr.prUpdatedAt,
-        })
-        .where(eq(pullRequests.id, existing.id));
-      results.push({ id: existing.id, prId: pr.prId });
-    } else {
-      const [row] = await db
-        .insert(pullRequests)
-        .values({
+  // Batch insert new PRs
+  const newPrs = prs.filter((pr) => !existingMap.has(pr.prId));
+  if (newPrs.length > 0) {
+    for (let i = 0; i < newPrs.length; i += SHA_CHUNK_SIZE) {
+      const chunk = newPrs.slice(i, i + SHA_CHUNK_SIZE);
+      const values = chunk.map((pr) => {
+        const reviewerNames = pr.participants
+          .filter((p) => p.role === "REVIEWER")
+          .map((p) => p.displayName);
+        return {
           repo,
           prId: pr.prId,
           title: pr.prTitle,
@@ -1302,9 +1458,38 @@ export async function upsertPullRequests(
           mergeCommitSha: pr.mergeCommitSha,
           createdAt: pr.prCreatedAt,
           updatedAt: pr.prUpdatedAt,
+        };
+      });
+      const inserted = await db.insert(pullRequests).values(values).returning({ id: pullRequests.id, prId: pullRequests.prId });
+      for (const r of inserted) results.push({ id: r.id, prId: r.prId });
+    }
+  }
+
+  // Update existing PRs (per-row, no per-row SELECT)
+  for (const pr of prs) {
+    const existingId = existingMap.get(pr.prId);
+    if (existingId !== undefined) {
+      const reviewerNames = pr.participants
+        .filter((p) => p.role === "REVIEWER")
+        .map((p) => p.displayName);
+      await db.update(pullRequests)
+        .set({
+          title: pr.prTitle,
+          description: pr.description,
+          state: pr.prState,
+          url: pr.prUrl,
+          sourceBranch: pr.sourceBranch,
+          targetBranch: pr.prTargetBranch,
+          authorName: pr.authorName,
+          reviewers: JSON.stringify(reviewerNames),
+          approvals: pr.prApprovals,
+          commentCount: pr.commentCount,
+          taskCount: pr.taskCount,
+          mergeCommitSha: pr.mergeCommitSha,
+          updatedAt: pr.prUpdatedAt,
         })
-        .returning({ id: pullRequests.id });
-      results.push({ id: row!.id, prId: pr.prId });
+        .where(eq(pullRequests.id, existingId));
+      results.push({ id: existingId, prId: pr.prId });
     }
   }
 
@@ -1319,38 +1504,46 @@ export async function storePRActivities(
 ): Promise<number> {
   if (activities.length === 0) return 0;
   const db = getDb();
-  let inserted = 0;
 
-  for (const a of activities) {
-    // Dedup check
-    const [existing] = await db
-      .select({ id: prActivities.id })
-      .from(prActivities)
-      .where(and(
-        eq(prActivities.pullRequestId, prRowId),
-        eq(prActivities.timestamp, a.timestamp),
-        eq(prActivities.activityType, a.activityType),
-        a.actorName ? eq(prActivities.actorName, a.actorName) : sql`${prActivities.actorName} IS NULL`
-      ));
+  // Batch-fetch existing activities for this PR and build dedup Set
+  const existingRows = await db
+    .select({
+      timestamp: prActivities.timestamp,
+      activityType: prActivities.activityType,
+      actorName: prActivities.actorName,
+    })
+    .from(prActivities)
+    .where(eq(prActivities.pullRequestId, prRowId));
 
-    if (!existing) {
-      await db.insert(prActivities)
-        .values({
-          pullRequestId: prRowId,
-          repo,
-          prId,
-          activityType: a.activityType,
-          actorName: a.actorName,
-          timestamp: a.timestamp,
-          newState: a.newState,
-          commentText: a.commentText,
-          commitHash: a.commitHash,
-        });
-      inserted++;
+  const existingKeys = new Set<string>();
+  for (const r of existingRows) {
+    existingKeys.add(`${r.timestamp}|${r.activityType}|${r.actorName ?? ""}`);
+  }
+
+  // Filter to new activities and bulk insert
+  const newActivities = activities.filter(
+    (a) => !existingKeys.has(`${a.timestamp}|${a.activityType}|${a.actorName ?? ""}`)
+  );
+
+  if (newActivities.length > 0) {
+    const values = newActivities.map((a) => ({
+      pullRequestId: prRowId,
+      repo,
+      prId,
+      activityType: a.activityType,
+      actorName: a.actorName,
+      timestamp: a.timestamp,
+      newState: a.newState,
+      commentText: a.commentText,
+      commitHash: a.commitHash,
+    }));
+    for (let i = 0; i < values.length; i += SHA_CHUNK_SIZE) {
+      const chunk = values.slice(i, i + SHA_CHUNK_SIZE);
+      await db.insert(prActivities).values(chunk);
     }
   }
 
-  return inserted;
+  return newActivities.length;
 }
 
 export async function getStaleActivityPRs(
@@ -1462,9 +1655,11 @@ export async function computeReviewRounds(prRowId: number): Promise<number> {
 
 export async function computeAndCachePRMetrics(prRowId: number): Promise<void> {
   const db = getDb();
-  const ttfr = await computeTimeToFirstReview(prRowId);
-  const ttm = await computeTimeToMerge(prRowId);
-  const rounds = await computeReviewRounds(prRowId);
+  const [ttfr, ttm, rounds] = await Promise.all([
+    computeTimeToFirstReview(prRowId),
+    computeTimeToMerge(prRowId),
+    computeReviewRounds(prRowId),
+  ]);
 
   await db.update(pullRequests)
     .set({
@@ -1561,58 +1756,52 @@ export async function getPRDashboardStats(repo?: string) {
   const conditions = repo ? [eq(pullRequests.repo, repo)] : [];
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const [totalOpenResult] = await db.select({ count: count() }).from(pullRequests)
-    .where(where ? and(where, eq(pullRequests.state, "OPEN")) : eq(pullRequests.state, "OPEN"));
+  // Run all independent queries in parallel
+  const [
+    [totalOpenResult],
+    [totalMergedResult],
+    [totalDeclinedResult],
+    mergedWithTTM,
+    withTTFR,
+    allPRs,
+    allPRIdRows,
+  ] = await Promise.all([
+    db.select({ count: count() }).from(pullRequests)
+      .where(where ? and(where, eq(pullRequests.state, "OPEN")) : eq(pullRequests.state, "OPEN")),
+    db.select({ count: count() }).from(pullRequests)
+      .where(where ? and(where, eq(pullRequests.state, "MERGED")) : eq(pullRequests.state, "MERGED")),
+    db.select({ count: count() }).from(pullRequests)
+      .where(where ? and(where, eq(pullRequests.state, "DECLINED")) : eq(pullRequests.state, "DECLINED")),
+    db.select({ ttm: pullRequests.timeToMergeMins }).from(pullRequests)
+      .where(where
+        ? and(where, eq(pullRequests.state, "MERGED"), isNotNull(pullRequests.timeToMergeMins))
+        : and(eq(pullRequests.state, "MERGED"), isNotNull(pullRequests.timeToMergeMins))),
+    db.select({ ttfr: pullRequests.timeToFirstReviewMins }).from(pullRequests)
+      .where(where
+        ? and(where, isNotNull(pullRequests.timeToFirstReviewMins))
+        : isNotNull(pullRequests.timeToFirstReviewMins)),
+    db.select({ rounds: pullRequests.reviewRounds }).from(pullRequests).where(where),
+    db.select({ id: pullRequests.id }).from(pullRequests).where(where),
+  ]);
+
   const totalOpen = totalOpenResult?.count ?? 0;
-
-  const [totalMergedResult] = await db.select({ count: count() }).from(pullRequests)
-    .where(where ? and(where, eq(pullRequests.state, "MERGED")) : eq(pullRequests.state, "MERGED"));
   const totalMerged = totalMergedResult?.count ?? 0;
-
-  const [totalDeclinedResult] = await db.select({ count: count() }).from(pullRequests)
-    .where(where ? and(where, eq(pullRequests.state, "DECLINED")) : eq(pullRequests.state, "DECLINED"));
   const totalDeclined = totalDeclinedResult?.count ?? 0;
 
-  // Avg time to merge (only merged PRs with non-null metric)
-  const mergedWithTTM = await db
-    .select({ ttm: pullRequests.timeToMergeMins })
-    .from(pullRequests)
-    .where(where
-      ? and(where, eq(pullRequests.state, "MERGED"), isNotNull(pullRequests.timeToMergeMins))
-      : and(eq(pullRequests.state, "MERGED"), isNotNull(pullRequests.timeToMergeMins))
-    );
   const avgTimeToMergeHours = mergedWithTTM.length > 0
     ? Math.round(mergedWithTTM.reduce((s, r) => s + (r.ttm ?? 0), 0) / mergedWithTTM.length / 60 * 10) / 10
     : 0;
 
-  // Avg time to first review
-  const withTTFR = await db
-    .select({ ttfr: pullRequests.timeToFirstReviewMins })
-    .from(pullRequests)
-    .where(where
-      ? and(where, isNotNull(pullRequests.timeToFirstReviewMins))
-      : isNotNull(pullRequests.timeToFirstReviewMins)
-    );
   const avgTimeToFirstReviewHours = withTTFR.length > 0
     ? Math.round(withTTFR.reduce((s, r) => s + (r.ttfr ?? 0), 0) / withTTFR.length / 60 * 10) / 10
     : 0;
 
-  // Avg review rounds
-  const allPRs = await db
-    .select({ rounds: pullRequests.reviewRounds })
-    .from(pullRequests)
-    .where(where);
   const avgReviewRounds = allPRs.length > 0
     ? Math.round(allPRs.reduce((s, r) => s + (r.rounds ?? 0), 0) / allPRs.length * 10) / 10
     : 0;
 
   // PRs without any review activity
-  const allPRIds = (await db
-    .select({ id: pullRequests.id })
-    .from(pullRequests)
-    .where(where))
-    .map((r) => r.id);
-
+  const allPRIds = allPRIdRows.map((r) => r.id);
   let prsWithoutReview = 0;
   if (allPRIds.length > 0) {
     const prsWithActivity = new Set<number>();
@@ -1765,25 +1954,33 @@ export async function upsertTicketStatusChanges(jiraKey: string, changes: Status
   if (changes.length === 0) return;
   const db = getDb();
 
-  for (const c of changes) {
-    const [existing] = await db
-      .select({ id: ticketStatusChanges.id })
-      .from(ticketStatusChanges)
-      .where(and(
-        eq(ticketStatusChanges.jiraKey, jiraKey),
-        eq(ticketStatusChanges.changedAt, c.changedAt),
-        eq(ticketStatusChanges.toStatus, c.toStatus),
-      ));
+  // Batch-fetch existing changes for this jiraKey and build dedup Set
+  const existingRows = await db
+    .select({ changedAt: ticketStatusChanges.changedAt, toStatus: ticketStatusChanges.toStatus })
+    .from(ticketStatusChanges)
+    .where(eq(ticketStatusChanges.jiraKey, jiraKey));
 
-    if (!existing) {
-      await db.insert(ticketStatusChanges)
-        .values({
-          jiraKey,
-          changedAt: c.changedAt,
-          fromStatus: c.fromStatus,
-          toStatus: c.toStatus,
-          changedBy: c.changedBy,
-        });
+  const existingKeys = new Set<string>();
+  for (const r of existingRows) {
+    existingKeys.add(`${r.changedAt}|${r.toStatus}`);
+  }
+
+  // Filter to new changes and bulk insert
+  const newChanges = changes.filter(
+    (c) => !existingKeys.has(`${c.changedAt}|${c.toStatus}`)
+  );
+
+  if (newChanges.length > 0) {
+    const values = newChanges.map((c) => ({
+      jiraKey,
+      changedAt: c.changedAt,
+      fromStatus: c.fromStatus,
+      toStatus: c.toStatus,
+      changedBy: c.changedBy,
+    }));
+    for (let i = 0; i < values.length; i += SHA_CHUNK_SIZE) {
+      const chunk = values.slice(i, i + SHA_CHUNK_SIZE);
+      await db.insert(ticketStatusChanges).values(chunk);
     }
   }
 }
@@ -1908,17 +2105,35 @@ export async function getSprintBurndown(sprintId: number): Promise<{
     };
   }
 
-  // Fetch all status changes for sprint tickets
+  // Batch fetch all status changes for sprint tickets
   const statusChangesMap = new Map<string, (typeof ticketStatusChanges.$inferSelect)[]>();
-  for (const key of ticketKeys) {
-    const changes = await getTicketStatusChanges(key);
-    statusChangesMap.set(key, changes);
+  for (let i = 0; i < ticketKeys.length; i += SHA_CHUNK_SIZE) {
+    const chunk = ticketKeys.slice(i, i + SHA_CHUNK_SIZE);
+    const changes = await db
+      .select()
+      .from(ticketStatusChanges)
+      .where(inArray(ticketStatusChanges.jiraKey, chunk))
+      .orderBy(asc(ticketStatusChanges.changedAt));
+    for (const c of changes) {
+      let arr = statusChangesMap.get(c.jiraKey);
+      if (!arr) { arr = []; statusChangesMap.set(c.jiraKey, arr); }
+      arr.push(c);
+    }
   }
 
   // Generate each day in the sprint range
   const startMs = new Date(sprint.startDate).getTime();
   const endMs = new Date(sprint.endDate).getTime();
   const days: SprintBurndownDay[] = [];
+
+  // Batch fetch all daily commit counts for the entire sprint range in one query
+  const sprintStartDate = new Date(startMs).toISOString().split("T")[0]!;
+  const sprintEndDate = new Date(endMs).toISOString().split("T")[0]!;
+  const allDailyCounts = await getDailyCommitCounts(sprintStartDate, sprintEndDate);
+  const dailyCountMap = new Map<string, number>();
+  for (const dc of allDailyCounts) {
+    dailyCountMap.set(dc.date, dc.count);
+  }
 
   for (let ms = startMs; ms <= endMs; ms += 86_400_000) {
     const date = new Date(ms).toISOString().split("T")[0]!;
@@ -1953,9 +2168,7 @@ export async function getSprintBurndown(sprintId: number): Promise<{
       }
     }
 
-    // Count commits for this day
-    const dailyCounts = await getDailyCommitCounts(date, date);
-    const commitsToday = dailyCounts.length > 0 ? dailyCounts[0]!.count : 0;
+    const commitsToday = dailyCountMap.get(date) ?? 0;
 
     days.push({
       date,
@@ -2055,6 +2268,27 @@ export async function getSprintMemberContributions(
     return c.jiraKeys.split(",").some((k) => keySet.has(k.trim()));
   });
 
+  // Batch fetch all merged PR counts grouped by authorName for the sprint date range
+  const prConditions: ReturnType<typeof eq>[] = [eq(pullRequests.state, "MERGED")];
+  if (sprint.startDate) prConditions.push(gte(pullRequests.updatedAt, sprint.startDate));
+  if (sprint.endDate) {
+    const endPlusOne = new Date(new Date(sprint.endDate).getTime() + 86_400_000).toISOString();
+    prConditions.push(lte(pullRequests.updatedAt, endPlusOne));
+  }
+
+  const allAuthorNames = [...new Set(sprintCommits.map((c) => c.authorName))];
+  const prCountsByAuthor = new Map<string, number>();
+  if (allAuthorNames.length > 0) {
+    const prCountRows = await db
+      .select({ authorName: pullRequests.authorName, count: count() })
+      .from(pullRequests)
+      .where(and(...prConditions, inArray(pullRequests.authorName, allAuthorNames)))
+      .groupBy(pullRequests.authorName);
+    for (const r of prCountRows) {
+      if (r.authorName) prCountsByAuthor.set(r.authorName, r.count);
+    }
+  }
+
   const results = [];
   for (const member of team) {
     const memberCommits = sprintCommits.filter((c) =>
@@ -2072,25 +2306,11 @@ export async function getSprintMemberContributions(
       }
     }
 
-    // Count merged PRs by this member in sprint date range
-    const prConditions: ReturnType<typeof eq>[] = [eq(pullRequests.state, "MERGED")];
-    if (sprint.startDate) prConditions.push(gte(pullRequests.updatedAt, sprint.startDate));
-    if (sprint.endDate) {
-      const endPlusOne = new Date(new Date(sprint.endDate).getTime() + 86_400_000).toISOString();
-      prConditions.push(lte(pullRequests.updatedAt, endPlusOne));
-    }
-
-    // Match by author name (find team member's PR author name from their commits)
+    // Look up merged PR count from pre-fetched map
     const authorNames = [...new Set(memberCommits.map((c) => c.authorName))];
     let prsMerged = 0;
-    if (authorNames.length > 0) {
-      for (const authorName of authorNames) {
-        const [prCount] = await db
-          .select({ count: count() })
-          .from(pullRequests)
-          .where(and(...prConditions, eq(pullRequests.authorName, authorName)));
-        prsMerged += prCount?.count ?? 0;
-      }
+    for (const name of authorNames) {
+      prsMerged += prCountsByAuthor.get(name) ?? 0;
     }
 
     results.push({
@@ -2134,7 +2354,155 @@ export async function getStandupData(
   // Yesterday = date - 1 day
   const dateMs = new Date(date + "T00:00:00Z").getTime();
   const yesterdayDate = new Date(dateMs - 86_400_000).toISOString().split("T")[0]!;
+  const nextDay = new Date(new Date(yesterdayDate).getTime() + 86_400_000).toISOString().split("T")[0]!;
 
+  const allEmails = team.flatMap((m) => m.emails).filter((e) => e);
+  if (allEmails.length === 0) {
+    return team.map((member) => ({
+      member,
+      yesterday: { commits: [], ticketsMoved: [], prsMerged: [], summaries: [] },
+      today: { activeBranches: [], activeTickets: [], openPRs: [] },
+      blockers: { stalePRs: [], idleTickets: [] },
+    }));
+  }
+
+  // ── Batch 1: Fetch all yesterday commits, status changes, branches, author names in parallel ──
+  const [allYesterdayCommits, allYesterdayChanges, allMemberBranches, authorNameRows] = await Promise.all([
+    db.select().from(commits).where(and(
+      inArray(commits.authorEmail, allEmails),
+      gte(commits.timestamp, yesterdayDate),
+      lte(commits.timestamp, nextDay + "T00:00:00.000Z"),
+      TEST_REPO_FILTER,
+    )).orderBy(desc(commits.timestamp)),
+
+    db.select().from(ticketStatusChanges).where(and(
+      gte(ticketStatusChanges.changedAt, yesterdayDate),
+      lte(ticketStatusChanges.changedAt, nextDay + "T00:00:00.000Z"),
+    )),
+
+    db.select().from(branches).where(and(
+      inArray(branches.authorEmail, allEmails),
+      eq(branches.isActive, 1),
+      sql`${branches.repo} != 'test-repo'`,
+    )),
+
+    db.select({ authorEmail: commits.authorEmail, authorName: commits.authorName })
+      .from(commits)
+      .where(inArray(commits.authorEmail, allEmails))
+      .groupBy(commits.authorEmail, commits.authorName),
+  ]);
+
+  // Index by email
+  const commitsByEmail = new Map<string, (typeof commits.$inferSelect)[]>();
+  for (const c of allYesterdayCommits) {
+    let arr = commitsByEmail.get(c.authorEmail);
+    if (!arr) { arr = []; commitsByEmail.set(c.authorEmail, arr); }
+    arr.push(c);
+  }
+
+  const branchesByEmail = new Map<string, (typeof branches.$inferSelect)[]>();
+  for (const b of allMemberBranches) {
+    let arr = branchesByEmail.get(b.authorEmail);
+    if (!arr) { arr = []; branchesByEmail.set(b.authorEmail, arr); }
+    arr.push(b);
+  }
+
+  const authorNamesByEmail = new Map<string, Set<string>>();
+  for (const r of authorNameRows) {
+    let set = authorNamesByEmail.get(r.authorEmail);
+    if (!set) { set = new Set(); authorNamesByEmail.set(r.authorEmail, set); }
+    set.add(r.authorName);
+  }
+
+  // ── Batch 2: Collect all ticket keys across all members, fetch tickets + summaries ──
+  const allTicketKeySet = new Set<string>();
+  const allAuthorNames = new Set<string>();
+  for (const member of team) {
+    for (const email of member.emails) {
+      const memberCommits = commitsByEmail.get(email) ?? [];
+      for (const c of memberCommits) {
+        if (c.jiraKeys) for (const k of c.jiraKeys.split(",")) allTicketKeySet.add(k.trim());
+      }
+      const memberBranchesList = branchesByEmail.get(email) ?? [];
+      for (const b of memberBranchesList) {
+        if (b.jiraKey) allTicketKeySet.add(b.jiraKey);
+      }
+      const names = authorNamesByEmail.get(email);
+      if (names) for (const n of names) allAuthorNames.add(n);
+    }
+  }
+
+  const allTicketKeys = [...allTicketKeySet];
+  const allAuthorNameArr = [...allAuthorNames];
+
+  // Batch fetch tickets, summaries, merged PRs, and open PRs in parallel
+  const [allTicketRows, allSummaries, allMergedPRs, allOpenPRs] = await Promise.all([
+    allTicketKeys.length > 0 ? getTicketsByKeys(allTicketKeys) : Promise.resolve([]),
+    allTicketKeys.length > 0 ? getTicketSummariesByKeys(allTicketKeys) : Promise.resolve([]),
+    allAuthorNameArr.length > 0 ? db.select({ prId: pullRequests.prId, title: pullRequests.title, repo: pullRequests.repo, authorName: pullRequests.authorName })
+      .from(pullRequests)
+      .where(and(
+        eq(pullRequests.state, "MERGED"),
+        inArray(pullRequests.authorName, allAuthorNameArr),
+        gte(pullRequests.updatedAt, yesterdayDate),
+        lte(pullRequests.updatedAt, nextDay + "T00:00:00.000Z"),
+      )) : Promise.resolve([]),
+    allAuthorNameArr.length > 0 ? db.select({ prId: pullRequests.prId, title: pullRequests.title, repo: pullRequests.repo, createdAt: pullRequests.createdAt, authorName: pullRequests.authorName })
+      .from(pullRequests)
+      .where(and(
+        eq(pullRequests.state, "OPEN"),
+        inArray(pullRequests.authorName, allAuthorNameArr),
+      )) : Promise.resolve([]),
+  ]);
+
+  // Build lookup maps
+  const ticketMap = new Map<string, typeof tickets.$inferSelect>();
+  for (const t of allTicketRows) ticketMap.set(t.jiraKey, t);
+
+  const summaryMap = new Map<string, { jiraKey: string; summaryText: string }[]>();
+  for (const ts of allSummaries) {
+    let arr = summaryMap.get(ts.jiraKey);
+    if (!arr) { arr = []; summaryMap.set(ts.jiraKey, arr); }
+    arr.push({ jiraKey: ts.jiraKey, summaryText: ts.summaryText });
+  }
+
+  // ── Batch 3: Fetch last commit dates for idle ticket detection ──
+  // Collect all active ticket keys across all members
+  const inProgressStatuses = ["In Progress", "In Development", "Development", "In Review", "Code Review", "Review"];
+  const allActiveTicketKeys: string[] = [];
+  for (const key of allTicketKeys) {
+    const t = ticketMap.get(key);
+    if (t?.status && inProgressStatuses.includes(t.status)) {
+      allActiveTicketKeys.push(key);
+    }
+  }
+
+  // Batch fetch last commit for each active ticket
+  const lastCommitByTicket = new Map<string, string>();
+  if (allActiveTicketKeys.length > 0) {
+    for (let i = 0; i < allActiveTicketKeys.length; i += SHA_CHUNK_SIZE) {
+      const chunk = allActiveTicketKeys.slice(i, i + SHA_CHUNK_SIZE);
+      const likeConditions = chunk.map((key) => like(commits.jiraKeys, `%${key}%`));
+      const rows = await db
+        .select({ jiraKeys: commits.jiraKeys, timestamp: commits.timestamp })
+        .from(commits)
+        .where(and(TEST_REPO_FILTER, or(...likeConditions)))
+        .orderBy(desc(commits.timestamp));
+
+      const keySet = new Set(chunk);
+      for (const row of rows) {
+        if (!row.jiraKeys) continue;
+        for (const k of row.jiraKeys.split(",")) {
+          const trimmed = k.trim();
+          if (keySet.has(trimmed) && !lastCommitByTicket.has(trimmed)) {
+            lastCommitByTicket.set(trimmed, row.timestamp);
+          }
+        }
+      }
+    }
+  }
+
+  // ── Assemble per-member results ──
   const results: StandupMemberData[] = [];
   for (const member of team) {
     if (member.emails.length === 0) {
@@ -2147,53 +2515,33 @@ export async function getStandupData(
       continue;
     }
 
-    // ── Yesterday ──────────────────────────────────────────────────
-    const nextDay = new Date(new Date(yesterdayDate).getTime() + 86_400_000).toISOString().split("T")[0]!;
-    const yesterdayCommits = await db
-      .select()
-      .from(commits)
-      .where(and(
-        inArray(commits.authorEmail, member.emails),
-        gte(commits.timestamp, yesterdayDate),
-        lte(commits.timestamp, nextDay + "T00:00:00.000Z"),
-        TEST_REPO_FILTER,
-      ))
-      .orderBy(desc(commits.timestamp));
+    // Gather member data from pre-fetched maps
+    const yesterdayCommits: (typeof commits.$inferSelect)[] = [];
+    const memberBranchesList: (typeof branches.$inferSelect)[] = [];
+    const memberAuthorNames = new Set<string>();
+    for (const email of member.emails) {
+      const ec = commitsByEmail.get(email);
+      if (ec) yesterdayCommits.push(...ec);
+      const eb = branchesByEmail.get(email);
+      if (eb) memberBranchesList.push(...eb);
+      const names = authorNamesByEmail.get(email);
+      if (names) for (const n of names) memberAuthorNames.add(n);
+    }
 
-    // Tickets moved yesterday (status changes)
-    const ticketsMoved: StandupMemberData["yesterday"]["ticketsMoved"] = [];
-    const yesterdayChanges = await db
-      .select()
-      .from(ticketStatusChanges)
-      .where(and(
-        gte(ticketStatusChanges.changedAt, yesterdayDate),
-        lte(ticketStatusChanges.changedAt, nextDay + "T00:00:00.000Z"),
-      ));
-
-    // Filter to tickets the member worked on (via commits)
+    // Member ticket keys
     const memberTicketKeys = new Set<string>();
     for (const c of yesterdayCommits) {
-      if (c.jiraKeys) {
-        for (const k of c.jiraKeys.split(",")) memberTicketKeys.add(k.trim());
-      }
+      if (c.jiraKeys) for (const k of c.jiraKeys.split(",")) memberTicketKeys.add(k.trim());
     }
-    // Also check branch jiraKeys
-    const memberBranches = await db
-      .select()
-      .from(branches)
-      .where(and(
-        inArray(branches.authorEmail, member.emails),
-        eq(branches.isActive, 1),
-        sql`${branches.repo} != 'test-repo'`,
-      ));
-    for (const b of memberBranches) {
+    for (const b of memberBranchesList) {
       if (b.jiraKey) memberTicketKeys.add(b.jiraKey);
     }
 
-    for (const change of yesterdayChanges) {
+    // Tickets moved yesterday — filter pre-fetched changes
+    const ticketsMoved: StandupMemberData["yesterday"]["ticketsMoved"] = [];
+    for (const change of allYesterdayChanges) {
       if (memberTicketKeys.has(change.jiraKey)) {
-        const [ticket] = await db.select({ summary: tickets.summary }).from(tickets)
-          .where(eq(tickets.jiraKey, change.jiraKey));
+        const ticket = ticketMap.get(change.jiraKey);
         ticketsMoved.push({
           jiraKey: change.jiraKey,
           summary: ticket?.summary ?? null,
@@ -2203,87 +2551,40 @@ export async function getStandupData(
       }
     }
 
-    // PRs merged yesterday
-    const prsMerged: StandupMemberData["yesterday"]["prsMerged"] = [];
-    // Find author names from commits
-    const authorNames = [...new Set(
-      (await db.select({ authorName: commits.authorName })
-        .from(commits)
-        .where(inArray(commits.authorEmail, member.emails))
-        .groupBy(commits.authorName))
-        .map((r) => r.authorName)
-    )];
+    // PRs merged yesterday — filter pre-fetched
+    const prsMerged = allMergedPRs
+      .filter((pr) => memberAuthorNames.has(pr.authorName))
+      .map((pr) => ({ prId: pr.prId, title: pr.title, repo: pr.repo }));
 
-    if (authorNames.length > 0) {
-      for (const authorName of authorNames) {
-        const merged = await db
-          .select({ prId: pullRequests.prId, title: pullRequests.title, repo: pullRequests.repo })
-          .from(pullRequests)
-          .where(and(
-            eq(pullRequests.state, "MERGED"),
-            eq(pullRequests.authorName, authorName),
-            gte(pullRequests.updatedAt, yesterdayDate),
-            lte(pullRequests.updatedAt, nextDay + "T00:00:00.000Z"),
-          ));
-        prsMerged.push(...merged);
-      }
-    }
-
-    // Yesterday's ticket summaries
+    // Summaries — filter pre-fetched
     const summaries: StandupMemberData["yesterday"]["summaries"] = [];
-    if (memberTicketKeys.size > 0) {
-      const keys = [...memberTicketKeys];
-      const latestSummaries = await getTicketSummariesByKeys(keys);
-      for (const ts of latestSummaries) {
-        summaries.push({ jiraKey: ts.jiraKey, summaryText: ts.summaryText });
-      }
+    for (const key of memberTicketKeys) {
+      const s = summaryMap.get(key);
+      if (s) summaries.push(...s);
     }
 
-    // ── Today ──────────────────────────────────────────────────────
-
-    const inProgressStatuses = ["In Progress", "In Development", "Development", "In Review", "Code Review", "Review"];
+    // Active tickets
     const activeTickets: StandupMemberData["today"]["activeTickets"] = [];
     const activeTicketKeySet = new Set<string>();
-
-    if (memberTicketKeys.size > 0) {
-      const keys = [...memberTicketKeys];
-      const ticketRows = await getTicketsByKeys(keys);
-      for (const t of ticketRows) {
-        if (t.status && inProgressStatuses.includes(t.status)) {
-          activeTickets.push({ jiraKey: t.jiraKey, summary: t.summary, status: t.status });
-          activeTicketKeySet.add(t.jiraKey);
-        }
+    for (const key of memberTicketKeys) {
+      const t = ticketMap.get(key);
+      if (t?.status && inProgressStatuses.includes(t.status)) {
+        activeTickets.push({ jiraKey: t.jiraKey, summary: t.summary, status: t.status });
+        activeTicketKeySet.add(t.jiraKey);
       }
     }
 
-    // Only show branches tied to an active ticket or with an open PR — not every branch
-    const activeBranches: StandupMemberData["today"]["activeBranches"] = memberBranches
-      .filter((b) => {
-        if (b.prState === "OPEN") return true;
-        if (b.jiraKey && activeTicketKeySet.has(b.jiraKey)) return true;
-        return false;
-      })
-      .map((b) => ({
-        name: b.name,
-        repo: b.repo,
-        jiraKey: b.jiraKey,
-        prState: b.prState,
-      }));
+    // Active branches
+    const activeBranches = memberBranchesList
+      .filter((b) => b.prState === "OPEN" || (b.jiraKey && activeTicketKeySet.has(b.jiraKey)))
+      .map((b) => ({ name: b.name, repo: b.repo, jiraKey: b.jiraKey, prState: b.prState }));
 
-    // Open PRs
-    const openPRs: StandupMemberData["today"]["openPRs"] = [];
-    if (authorNames.length > 0) {
-      for (const authorName of authorNames) {
-        const prs = await db
-          .select({ prId: pullRequests.prId, title: pullRequests.title, repo: pullRequests.repo, createdAt: pullRequests.createdAt })
-          .from(pullRequests)
-          .where(and(eq(pullRequests.state, "OPEN"), eq(pullRequests.authorName, authorName)));
-        openPRs.push(...prs);
-      }
-    }
+    // Open PRs — filter pre-fetched
+    const openPRs = allOpenPRs
+      .filter((pr) => memberAuthorNames.has(pr.authorName))
+      .map((pr) => ({ prId: pr.prId, title: pr.title, repo: pr.repo, createdAt: pr.createdAt }));
 
-    // ── Blockers ────────────────────────────────────────────────────
-    // Stale PRs: open > 48h with no review activity
+    // Stale PRs
     const stalePRs: StandupMemberData["blockers"]["stalePRs"] = [];
     for (const pr of openPRs) {
       const ageHours = Math.round((now - new Date(pr.createdAt).getTime()) / 3_600_000);
@@ -2292,23 +2593,13 @@ export async function getStandupData(
       }
     }
 
-    // Idle tickets: tickets member is working on with no commits > 3 days
+    // Idle tickets — use pre-fetched last commit data
     const idleTickets: StandupMemberData["blockers"]["idleTickets"] = [];
     const threeDaysAgo = new Date(now - 3 * 86_400_000).toISOString();
     for (const at of activeTickets) {
-      // Check last commit date for this ticket
-      const [lastCommit] = await db
-        .select({ timestamp: commits.timestamp })
-        .from(commits)
-        .where(and(
-          like(commits.jiraKeys, `%${at.jiraKey}%`),
-          TEST_REPO_FILTER,
-        ))
-        .orderBy(desc(commits.timestamp))
-        .limit(1);
-
-      if (lastCommit && lastCommit.timestamp < threeDaysAgo) {
-        const idleDays = Math.round((now - new Date(lastCommit.timestamp).getTime()) / 86_400_000);
+      const lastTs = lastCommitByTicket.get(at.jiraKey);
+      if (lastTs && lastTs < threeDaysAgo) {
+        const idleDays = Math.round((now - new Date(lastTs).getTime()) / 86_400_000);
         idleTickets.push({ jiraKey: at.jiraKey, summary: at.summary, idleDays });
       }
     }

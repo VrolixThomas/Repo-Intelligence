@@ -16,13 +16,14 @@ export function RunOverview({ config }: Props) {
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null);
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    setError(null);
     Promise.all([fetchStats(), fetchRuns()]).then(([s, r]) => {
       setStats(s);
       setRuns(r);
-      setLoading(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, []);
 
   const toggleRun = async (runId: number) => {
@@ -33,8 +34,12 @@ export function RunOverview({ config }: Props) {
     }
     setExpandedRunId(runId);
     setRunDetail(null);
-    const detail = await fetchRunDetail(runId);
-    setRunDetail(detail);
+    try {
+      const detail = await fetchRunDetail(runId);
+      setRunDetail(detail);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load run detail");
+    }
   };
 
   // Build email->name map from config
@@ -60,6 +65,10 @@ export function RunOverview({ config }: Props) {
       </div>
     );
   }
+
+  if (error) return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+  );
 
   return (
     <div>

@@ -52,22 +52,24 @@ export function PullRequestView({ config }: Props) {
   const [filterAuthor, setFilterAuthor] = useState("");
   const [tab, setTab] = useState<"prs" | "reviewers">("prs");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedPR, setSelectedPR] = useState<PRDetail | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerLoading, setDrawerLoading] = useState(false);
   const pageSize = 20;
 
   useEffect(() => {
-    fetchPRFilters().then(setFilters);
+    fetchPRFilters().then(setFilters).catch(() => {});
   }, []);
 
   useEffect(() => {
-    fetchPRStats(filterRepo || undefined).then(setStats);
-    fetchPRReviewers(filterRepo || undefined).then(setReviewers);
+    fetchPRStats(filterRepo || undefined).then(setStats).catch(() => {});
+    fetchPRReviewers(filterRepo || undefined).then(setReviewers).catch(() => {});
   }, [filterRepo]);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchPullRequests({
       repo: filterRepo || undefined,
       state: filterState || undefined,
@@ -77,8 +79,7 @@ export function PullRequestView({ config }: Props) {
     }).then((data) => {
       setPrs(data.pullRequests);
       setTotal(data.total);
-      setLoading(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, [filterRepo, filterState, filterAuthor, page]);
 
   const openDrawer = (prId: number) => {
@@ -87,7 +88,7 @@ export function PullRequestView({ config }: Props) {
     fetchPullRequestDetail(prId).then((detail) => {
       setSelectedPR(detail);
       setDrawerLoading(false);
-    });
+    }).catch(() => setDrawerLoading(false));
   };
 
   const totalPages = Math.ceil(total / pageSize);
@@ -114,6 +115,10 @@ export function PullRequestView({ config }: Props) {
       icon: "M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z",
     },
   };
+
+  if (error) return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+  );
 
   return (
     <div className="relative">

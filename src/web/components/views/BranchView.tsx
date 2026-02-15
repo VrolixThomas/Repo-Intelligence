@@ -16,6 +16,7 @@ export function BranchView({ config, sprintId }: Props) {
   const [filterRepo, setFilterRepo] = useState("");
   const [filterAuthor, setFilterAuthor] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [expandedBranches, setExpandedBranches] = useState<Set<number>>(new Set());
 
   const emailToName = new Map<string, string>();
@@ -29,18 +30,18 @@ export function BranchView({ config, sprintId }: Props) {
     fetchFilters().then((f) => {
       setRepos(f.repos);
       setAuthors(f.authors);
-    });
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchBranches({
       repo: filterRepo || undefined,
       author: filterAuthor || undefined,
     }).then((data) => {
       setBranches(data);
-      setLoading(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, [filterRepo, filterAuthor]);
 
   const toggleExpand = (id: number) => {
@@ -74,6 +75,10 @@ export function BranchView({ config, sprintId }: Props) {
         <h2 className="text-xl font-bold text-gray-900">Branches</h2>
         <p className="text-sm text-gray-500 mt-1">Active branches with commits, tickets, and PR status</p>
       </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm mb-4">{error}</div>
+      )}
 
       {/* Filter bar */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-4">

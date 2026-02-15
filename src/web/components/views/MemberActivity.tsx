@@ -18,12 +18,13 @@ export function MemberActivity({ config }: Props) {
   const [detail, setDetail] = useState<MemberDetail | null>(null);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    setError(null);
     fetchTeam().then((m) => {
       setMembers(m);
-      setLoading(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, []);
 
   const selectMember = async (name: string) => {
@@ -35,16 +36,24 @@ export function MemberActivity({ config }: Props) {
     setSelectedName(name);
     setPage(1);
     setDetail(null);
-    const d = await fetchMemberDetail(name, 1, PAGE_SIZE);
-    setDetail(d);
+    try {
+      const d = await fetchMemberDetail(name, 1, PAGE_SIZE);
+      setDetail(d);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load member detail");
+    }
   };
 
   const changePage = async (newPage: number) => {
     if (!selectedName) return;
     setPage(newPage);
     setDetail(null);
-    const d = await fetchMemberDetail(selectedName, newPage, PAGE_SIZE);
-    setDetail(d);
+    try {
+      const d = await fetchMemberDetail(selectedName, newPage, PAGE_SIZE);
+      setDetail(d);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load member detail");
+    }
   };
 
   if (loading) {
@@ -69,6 +78,10 @@ export function MemberActivity({ config }: Props) {
       </div>
     );
   }
+
+  if (error) return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+  );
 
   return (
     <div>

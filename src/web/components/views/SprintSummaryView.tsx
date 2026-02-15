@@ -98,7 +98,7 @@ export function SprintSummaryView({ config, sprintId, sprints }: Props) {
 
   // Load all summaries to know which sprints have them
   useEffect(() => {
-    fetchSprintSummaries().then(setAllSummaries).catch(() => {});
+    fetchSprintSummaries().then(setAllSummaries).catch((err: any) => setError(err?.message ?? "Failed to load sprint summaries"));
   }, []);
 
   // Load specific sprint summary
@@ -113,12 +113,12 @@ export function SprintSummaryView({ config, sprintId, sprints }: Props) {
     fetchSprintSummary(sprintId)
       .then((data) => {
         setSummary(data);
-        setLoading(false);
       })
-      .catch(() => {
+      .catch((err: any) => {
         setSummary(null);
-        setLoading(false);
-      });
+        setError(err?.message ?? "Failed to load sprint summary");
+      })
+      .finally(() => setLoading(false));
   }, [sprintId]);
 
   const sprint = sprints.find((s) => s.id === sprintId);
@@ -135,6 +135,10 @@ export function SprintSummaryView({ config, sprintId, sprints }: Props) {
 
       {loading && (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 animate-pulse h-64" />
+      )}
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
       )}
 
       {!loading && !summary && (

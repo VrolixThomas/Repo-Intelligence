@@ -64,6 +64,7 @@ export function AnalyticsView({ config, sprintId }: Props) {
   const [since, setSince] = useState(defaultSince);
   const [until, setUntil] = useState(defaultUntil);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Data
   const [velocity, setVelocity] = useState<CommitVelocityData | null>(null);
@@ -86,22 +87,27 @@ export function AnalyticsView({ config, sprintId }: Props) {
   // Fetch data when tab or date range changes
   useEffect(() => {
     setLoading(true);
+    setError(null);
     if (tab === "velocity") {
       fetchCommitVelocity(since, until, selectedMember || undefined)
         .then(setVelocity)
+        .catch((err: any) => setError(err?.message ?? "Failed to load analytics"))
         .finally(() => setLoading(false));
     } else if (tab === "churn") {
       fetchCodeChurn(since, until)
         .then(setChurn)
+        .catch((err: any) => setError(err?.message ?? "Failed to load analytics"))
         .finally(() => setLoading(false));
     } else if (tab === "pr") {
       fetchPRCycleTime(since, until)
         .then(setPrCycle)
+        .catch((err: any) => setError(err?.message ?? "Failed to load analytics"))
         .finally(() => setLoading(false));
     } else if (tab === "burndown") {
       if (sprintId) {
         fetchSprintBurndown(sprintId)
           .then(setBurndown)
+          .catch((err: any) => setError(err?.message ?? "Failed to load analytics"))
           .finally(() => setLoading(false));
       } else {
         setBurndown(null);
@@ -175,6 +181,11 @@ export function AnalyticsView({ config, sprintId }: Props) {
           </button>
         ))}
       </div>
+
+      {/* Error */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+      )}
 
       {/* Loading */}
       {loading && (

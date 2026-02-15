@@ -53,10 +53,12 @@ export function TicketBoard({ config, sprintId }: Props) {
   const [filterAssignee, setFilterAssignee] = useState("");
   const [filterPriority, setFilterPriority] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     setSelectedKey(null);
     Promise.all([
       fetchTicketsByStatus(sprintId ?? undefined),
@@ -64,8 +66,7 @@ export function TicketBoard({ config, sprintId }: Props) {
     ]).then(([d, b]) => {
       setData(d);
       setBranches(b);
-      setLoading(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, [sprintId]);
 
   // Close drawer on Escape
@@ -77,6 +78,10 @@ export function TicketBoard({ config, sprintId }: Props) {
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [selectedKey]);
+
+  if (error) return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+  );
 
   if (loading || !data) {
     return (
@@ -355,7 +360,7 @@ function TicketDetailPanel({
     fetchTicketSummaries({ jiraKey: ticket.jiraKey }).then((data) => {
       setSummaries(data);
       setLoadingSummaries(false);
-    });
+    }).catch(() => {});
   }, [ticket.jiraKey]);
 
   // Gather all commits across branches for this ticket
