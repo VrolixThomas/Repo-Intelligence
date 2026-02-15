@@ -157,6 +157,8 @@ src/
 - **View error handling**: All view components use `error` state (`string | null`), `.catch()` on every `.then()` chain, `.finally(() => setLoading(false))` to always clear loading, and display a red error banner when error is set. Reset `setError(null)` at the start of each fetch useEffect. Non-critical fetches (e.g. ticket summaries in drawer, PR filters) use `.catch(() => {})` to silently swallow errors.
 - **Batch queries over N+1**: All read-path queries (`getBranchesWithCommits()`, `getSprintBranches()`, `getEnrichedDailyActivity()`, `getStandupData()`, `getSprintBurndown()`, `getAllMemberStats()`, `getMemberTicketSummaries()`, `getTicketLifecycleMetrics()`, `getPRDashboardStats()`, `getSprintMemberContributions()`) batch-fetch data in 1-5 queries then assemble in JS. All write-path upserts (`updateBranches()`, `upsertTickets()`, `upsertSprints()`, `upsertSprintTickets()`, `upsertPullRequests()`, `storePRActivities()`, `upsertTicketStatusChanges()`) batch-fetch existing records then bulk insert new ones. `computeAndCachePRMetrics()` computes TTFR/TTM/rounds in parallel.
 - **Parallel endpoint queries**: `web.ts` uses `Promise.all()` for independent queries in `/api/sprints/:id`, `/api/tickets/by-status`, `/api/filters`, `/api/runs/:id`, `/api/team/:name`
+- **Sprint-scoped PR stats**: `getSprintPRStats(sprintId)` computes merged count, avg merge time, and avg review rounds from PRs linked to sprint branches only (not global). Used by sprint summary generation
+- **PR-to-member matching**: `getSprintMemberContributions()` matches PRs to members via branch `authorEmail` → `team[].emails`, NOT via `pullRequests.authorName` (Bitbucket display names don't match Git author names)
 
 ## TypeScript
 
@@ -306,3 +308,7 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 - Bitbucket auth: email + API token Basic Auth. Resolves email from `BITBUCKET_EMAIL` → `JIRA_EMAIL`, token from `BITBUCKET_API_TOKEN` → `JIRA_API_TOKEN`
 - Bitbucket App Passwords deprecated Sep 2025, replaced by API tokens (require email, not username)
 - All view fetch chains must have `.catch()` and `.finally()` — never leave a `.then()` without error handling. Use `(err: any)` for catch callbacks
+- Claude CLI `--session-id` creates a new session; use `--resume <id>` to continue an existing session. `invokeClaude()` supports both via `sessionId` and `resumeSessionId` options
+- Hash-based routing supports query params: `#members?name=John` — use `getHashParam()` in `app.tsx` to read them
+- SprintDashboard `buildMemberStats()` only includes `config.team` members — non-team commit authors are excluded
+- CalendarStrip arrow buttons navigate to previous/next day (not just scroll)

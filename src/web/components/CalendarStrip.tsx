@@ -48,10 +48,19 @@ export function CalendarStrip({
     }
   }, [selectedDate]);
 
-  const scrollBy = (days: number) => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollBy({ left: days * 56, behavior: "smooth" });
+  const navigateDay = (offset: number) => {
+    const idx = dates.indexOf(selectedDate);
+    if (idx >= 0) {
+      const newIdx = idx + offset;
+      if (newIdx >= 0 && newIdx < dates.length) {
+        onSelectDate(dates[newIdx]!);
+        return;
+      }
     }
+    // Navigate beyond visible range — compute the date mathematically
+    const d = new Date(selectedDate + "T12:00:00");
+    d.setDate(d.getDate() + offset);
+    onSelectDate(d.toISOString().split("T")[0]!);
   };
 
   return (
@@ -60,10 +69,10 @@ export function CalendarStrip({
         <p className="text-xs text-gray-500 mb-2">{sprintLabel}</p>
       )}
       <div className="flex items-center gap-2">
-        {/* Left arrow */}
+        {/* Left arrow — previous day */}
         <button
-          onClick={() => scrollBy(-7)}
-          className="shrink-0 w-8 h-8 rounded-lg bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 transition-colors"
+          onClick={() => navigateDay(-1)}
+          className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors bg-gray-100 hover:bg-gray-200 text-gray-600"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
@@ -114,10 +123,10 @@ export function CalendarStrip({
           })}
         </div>
 
-        {/* Right arrow */}
+        {/* Right arrow — next day */}
         <button
-          onClick={() => scrollBy(7)}
-          className="shrink-0 w-8 h-8 rounded-lg bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 transition-colors"
+          onClick={() => navigateDay(1)}
+          className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors bg-gray-100 hover:bg-gray-200 text-gray-600"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />

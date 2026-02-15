@@ -17,10 +17,18 @@ import { fetchConfig, fetchSprints, fetchActiveSprint } from "./api";
 import type { AppConfig, View, Sprint } from "./types";
 
 function getHashView(): View {
-  const hash = window.location.hash.replace("#", "");
+  const hash = window.location.hash.replace("#", "").split("?")[0] ?? "";
   const valid: View[] = ["sprint", "standup", "activity", "analytics", "tickets", "lifecycle", "prs", "branches", "commits", "members", "runs", "sprint-summary"];
   if (valid.includes(hash as View)) return hash as View;
   return "sprint";
+}
+
+function getHashParam(key: string): string | null {
+  const hash = window.location.hash;
+  const qIdx = hash.indexOf("?");
+  if (qIdx === -1) return null;
+  const params = new URLSearchParams(hash.slice(qIdx + 1));
+  return params.get(key);
 }
 
 function App() {
@@ -115,7 +123,7 @@ function App() {
         <AnalyticsView config={config} sprintId={selectedSprintId} />
       )}
       {view === "runs" && <RunOverview config={config} />}
-      {view === "members" && <MemberActivity config={config} />}
+      {view === "members" && <MemberActivity config={config} initialMember={getHashParam("name")} />}
       {view === "branches" && <BranchView config={config} sprintId={selectedSprintId} />}
       {view === "tickets" && <TicketBoard config={config} sprintId={selectedSprintId} />}
       {view === "lifecycle" && <TicketLifecycleView config={config} sprintId={selectedSprintId} />}
