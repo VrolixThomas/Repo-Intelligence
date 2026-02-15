@@ -50,10 +50,10 @@ export async function findClaudeCli(): Promise<string | null> {
         return path.trim();
       }
     } catch {
-      // which failed, try the path directly
+      
     }
 
-    // Try direct execution with --version
+
     try {
       const proc = Bun.spawn([candidate, "--version"], {
         stdout: "pipe",
@@ -64,7 +64,6 @@ export async function findClaudeCli(): Promise<string | null> {
         return candidate;
       }
     } catch {
-      // not found at this path
     }
   }
 
@@ -129,7 +128,7 @@ export async function invokeClaude(opts: InvokeOptions): Promise<ClaudeResult | 
 
   // Set up timeout
   const timeout = setTimeout(() => {
-    try { proc.kill(); } catch { /* already dead */ }
+    try { proc.kill(); } catch { }
   }, timeoutMs);
 
   try {
