@@ -72,6 +72,7 @@ drizzle.config.ts            # Drizzle ORM config (PostgreSQL dialect)
 supabase/
   migrations/                # Supabase migration SQL files
     20260208000000_initial_schema.sql  # All 11 tables
+    20260215000000_add_performance_indexes.sql  # Performance indexes for commits + branches
 data/
   reports/                   # Generated markdown reports
 src/
@@ -275,6 +276,20 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 
 **Analytics**: `GET /api/analytics/commit-velocity?since=&until=&member=`, `GET /api/analytics/code-churn?since=&until=`, `GET /api/analytics/pr-cycle-time?since=&until=`, `GET /api/analytics/sprint-burndown?sprintId=`
 
+## Database Indexes
+
+### commits
+- `idx_commits_sha` on `(sha)` — redundant with UNIQUE constraint, harmless
+- `idx_commits_repo_branch` on `(repo, branch)` — branch commit lookups
+- `idx_commits_author_timestamp` on `(author_email, timestamp)` — member queries with timestamp range/sort (replaces old single-column `idx_commits_author`)
+- `idx_commits_run` on `(first_seen_run)` — run detail queries
+- `idx_commits_timestamp` on `(timestamp)` — analytics, calendar, sprint-scoped queries
+
+### branches
+- `idx_branches_repo_name` on `(repo, name)` — branch lookups
+- `idx_branches_jira_key` on `(jira_key)` — sprint-scoped branch queries
+- `idx_branches_active_author` on `(is_active, author_email)` — member stats, standup, branch view
+
 ## Completed Phases
 
 1. Core scaffolding (git scanner, config, author grouping)
@@ -291,6 +306,7 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 12. Supabase migration (SQLite → PostgreSQL via postgres.js, all queries async, Supabase CLI migrations)
 13. Dashboard loading fix (frontend error handling on all 12 views + app.tsx, N+1 query elimination in queries.ts, endpoint parallelization in web.ts)
 14. Full N+1 audit (batch all write-path upserts, parallelize getPRDashboardStats/computeAndCachePRMetrics, batch getSprintBurndown commit counts, batch getSprintMemberContributions PR counts, filter getTicketLifecycleMetrics branch query, parallelize /api/runs/:id and /api/team/:name, remove dead getTeamDailyActivity)
+15. Performance indexes (commits timestamp + author_timestamp composite, branches jira_key + active_author composite — eliminates full table scans on dashboard queries)
 
 ## Key Gotchas
 
