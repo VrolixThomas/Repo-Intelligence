@@ -8,11 +8,12 @@ import type { AppConfig, TeamMember, MemberDetail } from "../../types";
 
 interface Props {
   config: AppConfig;
+  initialMember?: string | null;
 }
 
 const PAGE_SIZE = 20;
 
-export function MemberActivity({ config }: Props) {
+export function MemberActivity({ config, initialMember }: Props) {
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [detail, setDetail] = useState<MemberDetail | null>(null);
@@ -24,6 +25,10 @@ export function MemberActivity({ config }: Props) {
     setError(null);
     fetchTeam().then((m) => {
       setMembers(m);
+      // Auto-select member if navigated from dashboard
+      if (initialMember && m.some((tm) => tm.name === initialMember)) {
+        selectMember(initialMember);
+      }
     }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, []);
 

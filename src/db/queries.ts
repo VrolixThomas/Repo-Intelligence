@@ -1823,6 +1823,61 @@ export async function getPRDashboardStats(repo?: string) {
   return { totalOpen, totalMerged, totalDeclined, avgTimeToMergeHours, avgTimeToFirstReviewHours, avgReviewRounds, prsWithoutReview };
 }
 
+/**
+ * Get PR stats scoped to a specific sprint by looking up PRs linked to sprint branches.
+ */
+export async function getSprintPRStats(sprintId: number) {
+  const db = getDb();
+
+  // Get sprint branch PR IDs
+  const ticketKeys = await getSprintTicketKeys(sprintId);
+  if (ticketKeys.length === 0) {
+    return { totalMerged: 0, avgTimeToMergeHours: 0, avgReviewRounds: 0 };
+  }
+
+  // Collect prIds from branches linked to sprint tickets
+  const prIds: number[] = [];
+  for (let i = 0; i < ticketKeys.length; i += SHA_CHUNK_SIZE) {
+    const chunk = ticketKeys.slice(i, i + SHA_CHUNK_SIZE);
+    const rows = await db
+      .select({ prId: branches.prId })
+      .from(branches)
+      .where(and(inArray(branches.jiraKey, chunk), isNotNull(branches.prId)));
+    for (const r of rows) {
+      if (r.prId != null) prIds.push(r.prId);
+    }
+  }
+
+  if (prIds.length === 0) {
+    return { totalMerged: 0, avgTimeToMergeHours: 0, avgReviewRounds: 0 };
+  }
+
+  // Query pullRequests for just these PR IDs (match on prId + repo)
+  // branches.prId stores the Bitbucket PR number, pullRequests.prId is the same
+  const sprintPRs = await db
+    .select({
+      state: pullRequests.state,
+      timeToMergeMins: pullRequests.timeToMergeMins,
+      reviewRounds: pullRequests.reviewRounds,
+    })
+    .from(pullRequests)
+    .where(inArray(pullRequests.prId, prIds));
+
+  const merged = sprintPRs.filter((pr) => pr.state === "MERGED");
+  const totalMerged = merged.length;
+
+  const mergedWithTTM = merged.filter((pr) => pr.timeToMergeMins != null);
+  const avgTimeToMergeHours = mergedWithTTM.length > 0
+    ? Math.round(mergedWithTTM.reduce((s, r) => s + (r.timeToMergeMins ?? 0), 0) / mergedWithTTM.length / 60 * 10) / 10
+    : 0;
+
+  const avgReviewRounds = sprintPRs.length > 0
+    ? Math.round(sprintPRs.reduce((s, r) => s + (r.reviewRounds ?? 0), 0) / sprintPRs.length * 10) / 10
+    : 0;
+
+  return { totalMerged, avgTimeToMergeHours, avgReviewRounds };
+}
+
 export async function getReviewerStats(repo?: string) {
   const db = getDb();
 
@@ -2268,24 +2323,27 @@ export async function getSprintMemberContributions(
     return c.jiraKeys.split(",").some((k) => keySet.has(k.trim()));
   });
 
-  // Batch fetch all merged PR counts grouped by authorName for the sprint date range
-  const prConditions: ReturnType<typeof eq>[] = [eq(pullRequests.state, "MERGED")];
-  if (sprint.startDate) prConditions.push(gte(pullRequests.updatedAt, sprint.startDate));
-  if (sprint.endDate) {
-    const endPlusOne = new Date(new Date(sprint.endDate).getTime() + 86_400_000).toISOString();
-    prConditions.push(lte(pullRequests.updatedAt, endPlusOne));
+  // Build email-to-member map for matching
+  const emailToMember = new Map<string, string>();
+  for (const m of team) {
+    for (const e of m.emails) emailToMember.set(e.toLowerCase(), m.name);
   }
 
-  const allAuthorNames = [...new Set(sprintCommits.map((c) => c.authorName))];
-  const prCountsByAuthor = new Map<string, number>();
-  if (allAuthorNames.length > 0) {
-    const prCountRows = await db
-      .select({ authorName: pullRequests.authorName, count: count() })
-      .from(pullRequests)
-      .where(and(...prConditions, inArray(pullRequests.authorName, allAuthorNames)))
-      .groupBy(pullRequests.authorName);
-    for (const r of prCountRows) {
-      if (r.authorName) prCountsByAuthor.set(r.authorName, r.count);
+  // Get sprint branches with PR data — match PRs to members via branch authorEmail
+  const prCountsByMember = new Map<string, number>();
+  for (let i = 0; i < ticketKeys.length; i += SHA_CHUNK_SIZE) {
+    const chunk = ticketKeys.slice(i, i + SHA_CHUNK_SIZE);
+    const branchRows = await db
+      .select({ authorEmail: branches.authorEmail, prId: branches.prId, prState: branches.prState })
+      .from(branches)
+      .where(and(inArray(branches.jiraKey, chunk), isNotNull(branches.prId)));
+    for (const b of branchRows) {
+      if (b.prState === "MERGED") {
+        const memberName = emailToMember.get(b.authorEmail.toLowerCase());
+        if (memberName) {
+          prCountsByMember.set(memberName, (prCountsByMember.get(memberName) ?? 0) + 1);
+        }
+      }
     }
   }
 
@@ -2306,18 +2364,11 @@ export async function getSprintMemberContributions(
       }
     }
 
-    // Look up merged PR count from pre-fetched map
-    const authorNames = [...new Set(memberCommits.map((c) => c.authorName))];
-    let prsMerged = 0;
-    for (const name of authorNames) {
-      prsMerged += prCountsByAuthor.get(name) ?? 0;
-    }
-
     results.push({
       name: member.name,
       commitCount: memberCommits.length,
       ticketCount: memberTickets.size,
-      prsMerged,
+      prsMerged: prCountsByMember.get(member.name) ?? 0,
     });
   }
   return results;

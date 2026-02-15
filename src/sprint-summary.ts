@@ -4,7 +4,7 @@
  * stores in DB, and generates a markdown report.
  */
 
-import { getSprintById, getSprintTicketKeys, getSprintTickets, getSprintCommits, getTicketSummariesByKeys, getSprintMemberContributions, getPRDashboardStats, storeSprintSummary } from "./db/queries";
+import { getSprintById, getSprintTicketKeys, getSprintTickets, getSprintCommits, getTicketSummariesByKeys, getSprintMemberContributions, getSprintPRStats, storeSprintSummary } from "./db/queries";
 import { findClaudeCli, invokeClaude } from "./claude/invoke";
 import { buildSprintTechnicalPrompt, buildSprintGeneralPrompt } from "./claude/prompt";
 import type { SprintSummaryInput } from "./claude/prompt";
@@ -40,7 +40,7 @@ export async function generateSprintSummary(opts: SprintSummaryOptions): Promise
   const sprintCommits = await getSprintCommits(sprintId);
   const ticketSummaries = await getTicketSummariesByKeys(ticketKeys);
   const memberContributions = await getSprintMemberContributions(sprintId, config.team);
-  const prStats = await getPRDashboardStats();
+  const prStats = await getSprintPRStats(sprintId);
 
   // Compute ticket status breakdown
   let done = 0, inProgress = 0, inReview = 0, todo = 0;
@@ -111,7 +111,7 @@ export async function generateSprintSummary(opts: SprintSummaryOptions): Promise
     claudePath,
     prompt: generalPrompt,
     repoPath: config.repos[0]?.path ?? process.cwd(),
-    sessionId,
+    resumeSessionId: sessionId,
     timeoutMs: 180_000,
   });
 

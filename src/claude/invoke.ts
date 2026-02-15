@@ -25,6 +25,7 @@ export interface InvokeOptions {
   allowedTools?: string[];  // default: ["Read", "Grep", "Glob"]
   timeoutMs?: number;       // default: 120_000
   sessionId?: string;       // for incremental analysis continuity
+  resumeSessionId?: string; // resume an existing session instead of creating one
 }
 
 /**
@@ -85,6 +86,7 @@ export async function invokeClaude(opts: InvokeOptions): Promise<ClaudeResult | 
     allowedTools = ["Read", "Grep", "Glob"],
     timeoutMs = 120_000,
     sessionId,
+    resumeSessionId,
   } = opts;
 
   const args = [
@@ -99,7 +101,9 @@ export async function invokeClaude(opts: InvokeOptions): Promise<ClaudeResult | 
     args.push("--allowedTools", allowedTools.join(","));
   }
 
-  if (sessionId) {
+  if (resumeSessionId) {
+    args.push("--resume", resumeSessionId);
+  } else if (sessionId) {
     args.push("--session-id", sessionId);
   }
 

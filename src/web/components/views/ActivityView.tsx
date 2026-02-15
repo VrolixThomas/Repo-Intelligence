@@ -13,7 +13,7 @@ function getToday(): string {
   return new Date().toISOString().split("T")[0]!;
 }
 
-function getDateRange(sprint: Sprint | null): { start: string; end: string } {
+function getInitialRange(sprint: Sprint | null): { start: string; end: string } {
   if (sprint?.startDate && sprint?.endDate) {
     return {
       start: sprint.startDate.split("T")[0]!,
@@ -29,6 +29,13 @@ function getDateRange(sprint: Sprint | null): { start: string; end: string } {
   };
 }
 
+/** Shift a date string by N days */
+function shiftDate(dateStr: string, days: number): string {
+  const d = new Date(dateStr + "T12:00:00");
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split("T")[0]!;
+}
+
 function getDefaultDate(sprint: Sprint | null): string {
   const today = getToday();
   if (sprint?.endDate) {
@@ -39,7 +46,9 @@ function getDefaultDate(sprint: Sprint | null): string {
 }
 
 export function ActivityView({ config, sprint }: Props) {
-  const range = getDateRange(sprint);
+  const initial = getInitialRange(sprint);
+  const [rangeStart, setRangeStart] = useState(initial.start);
+  const [rangeEnd, setRangeEnd] = useState(initial.end);
   const [selectedDate, setSelectedDate] = useState(getDefaultDate(sprint));
   const [activityCounts, setActivityCounts] = useState<Map<string, number>>(new Map());
   const [dailyActivity, setDailyActivity] = useState<DailyActivity[]>([]);
@@ -47,18 +56,29 @@ export function ActivityView({ config, sprint }: Props) {
   const [loadingDay, setLoadingDay] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Auto-expand range when selected date goes outside
+  const handleSelectDate = (date: string) => {
+    if (date < rangeStart) {
+      setRangeStart(shiftDate(date, -7)); // extend 7 days before
+    }
+    if (date > rangeEnd) {
+      setRangeEnd(shiftDate(date, 7)); // extend 7 days after
+    }
+    setSelectedDate(date);
+  };
+
   // Fetch date range activity counts
   useEffect(() => {
     setLoadingRange(true);
     setError(null);
-    fetchActivityRange(range.start, range.end).then((counts) => {
+    fetchActivityRange(rangeStart, rangeEnd).then((counts) => {
       const map = new Map<string, number>();
       for (const c of counts) {
         map.set(c.date, c.count);
       }
       setActivityCounts(map);
     }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoadingRange(false));
-  }, [range.start, range.end]);
+  }, [rangeStart, rangeEnd]);
 
   // Fetch daily activity for selected date
   useEffect(() => {
@@ -69,8 +89,11 @@ export function ActivityView({ config, sprint }: Props) {
     }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoadingDay(false));
   }, [selectedDate]);
 
-  // Reset date when sprint changes
+  // Reset date and range when sprint changes
   useEffect(() => {
+    const r = getInitialRange(sprint);
+    setRangeStart(r.start);
+    setRangeEnd(r.end);
     setSelectedDate(getDefaultDate(sprint));
   }, [sprint?.id]);
 
@@ -105,10 +128,10 @@ export function ActivityView({ config, sprint }: Props) {
       {/* Calendar strip */}
       {!loadingRange && (
         <CalendarStrip
-          startDate={range.start}
-          endDate={range.end}
+          startDate={rangeStart}
+          endDate={rangeEnd}
           selectedDate={selectedDate}
-          onSelectDate={setSelectedDate}
+          onSelectDate={handleSelectDate}
           activityCounts={activityCounts}
           sprintLabel={sprint ? sprint.name : undefined}
         />

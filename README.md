@@ -168,19 +168,26 @@ The dashboard is a React SPA served by Bun with 12 views accessible via hash rou
 
 ### Sprint Dashboard (`#sprint`) — Default View
 
-Progress bar, per-member commit/ticket stats, mini kanban board showing ticket status distribution. The active sprint is selected by default.
+Sprint health at a glance with actionable insights. Shows:
+- **Health cards** — completion % (color-coded vs time elapsed), in-progress/review counts, commits, PRs merged
+- **Needs Attention** — stale PRs (open >2 days), tickets in progress without branches, tickets in review without PRs, idle team members
+- **Team cards** — each member's current focus (active ticket + status), commit/PR counts. Clicking navigates to `#members` with member pre-selected
+- **Mini kanban** — ticket status distribution with links to full board
+
+Only configured team members shown (non-team commit authors excluded).
 
 ### Daily Standup (`#standup`)
 
-Yesterday's activity and today's planned work per team member, with auto-detected blockers:
-- Stale PRs (open >48 hours without review)
-- Idle tickets (no activity >3 days)
+Two-column layout per member: Yesterday + Current Focus, with blockers promoted to a top-level banner.
+- **Blockers** (top banner) — stale PRs with clickable links + age in days, idle tickets with links
+- **Yesterday** — ticket status transitions with status badges, merged PRs with links, full Claude-generated summaries in cards
+- **Current Focus** — active tickets in highlighted cards with status badges and full summary text, active branches, open PR count
 
-Date navigation to review past standups.
+Date navigation with "Today" badge indicator. All items are clickable links to Jira/Bitbucket.
 
 ### Activity Calendar (`#activity`)
 
-Calendar strip with per-member daily activity cards showing commits, tickets touched, and branch activity.
+Calendar strip with per-member daily activity cards showing commits, tickets touched, and branch activity. Arrow buttons navigate to previous/next day.
 
 ### Analytics (`#analytics`)
 
