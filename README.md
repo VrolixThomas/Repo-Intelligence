@@ -10,7 +10,7 @@ A CLI tool that generates daily team activity summaries from Git repositories. S
 - **Claude AI summaries** — Per-ticket context-aware summaries with incremental analysis, plus two-section sprint summaries (technical + executive)
 - **Interactive follow-ups** — Resume Claude sessions to ask deeper questions about tickets, members, or runs
 - **Sprint management** — Sprint sync from Jira, sprint-scoped views, auto-detect sprint close with summary generation
-- **Web dashboard** — 12 views: sprint dashboard, standup, activity calendar, analytics (4 chart types), ticket board, PR metrics, and more
+- **Web dashboard** — 12 views with error handling: sprint dashboard, standup, activity calendar, analytics (4 chart types), ticket board, PR metrics, and more. Batch-optimized DB queries and parallelized API endpoints
 - **Cron scheduling** — Timezone-aware daily scans with auto sprint-close detection
 - **Standup reports** — Yesterday/today/blockers per member with auto-detected blockers (stale PRs >48h, idle tickets >3d)
 - **Trend analytics** — Commit velocity, code churn, PR cycle times, sprint burndown — all pure SVG charts

@@ -28,9 +28,10 @@ function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [sprints, setSprints] = useState<Sprint[]>([]);
   const [selectedSprintId, setSelectedSprintId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Load config and sprints in parallel
+    setError(null);
     Promise.all([
       fetchConfig(),
       fetchSprints(),
@@ -38,12 +39,13 @@ function App() {
     ]).then(([cfg, sprintList, active]) => {
       setConfig(cfg);
       setSprints(sprintList);
-      // Default to active sprint
       if (active) {
         setSelectedSprintId(active.id);
       } else if (sprintList.length > 0) {
         setSelectedSprintId(sprintList[0]!.id);
       }
+    }).catch((err) => {
+      setError(err?.message ?? "Failed to load dashboard");
     });
   }, []);
 
@@ -56,6 +58,23 @@ function App() {
   const navigate = (v: View) => {
     window.location.hash = v;
   };
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <div className="text-red-500 text-lg mb-2">Failed to load dashboard</div>
+          <div className="text-gray-500 text-sm mb-4">{error}</div>
+          <button
+            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+            onClick={() => window.location.reload()}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!config) {
     return (

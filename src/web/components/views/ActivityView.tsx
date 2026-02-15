@@ -45,27 +45,28 @@ export function ActivityView({ config, sprint }: Props) {
   const [dailyActivity, setDailyActivity] = useState<DailyActivity[]>([]);
   const [loadingRange, setLoadingRange] = useState(true);
   const [loadingDay, setLoadingDay] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Fetch date range activity counts
   useEffect(() => {
     setLoadingRange(true);
+    setError(null);
     fetchActivityRange(range.start, range.end).then((counts) => {
       const map = new Map<string, number>();
       for (const c of counts) {
         map.set(c.date, c.count);
       }
       setActivityCounts(map);
-      setLoadingRange(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoadingRange(false));
   }, [range.start, range.end]);
 
   // Fetch daily activity for selected date
   useEffect(() => {
     setLoadingDay(true);
+    setError(null);
     fetchActivity(selectedDate).then((data) => {
       setDailyActivity(data);
-      setLoadingDay(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoadingDay(false));
   }, [selectedDate]);
 
   // Reset date when sprint changes
@@ -89,6 +90,10 @@ export function ActivityView({ config, sprint }: Props) {
     day: "numeric",
     year: "numeric",
   });
+
+  if (error) return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+  );
 
   return (
     <div className="space-y-4">

@@ -169,13 +169,14 @@ export function StandupView({ config }: Props) {
   const [date, setDate] = useState(getToday);
   const [data, setData] = useState<StandupMemberData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchStandup(date).then((result) => {
       setData(result);
-      setLoading(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, [date]);
 
   const prevDay = () => {
@@ -227,6 +228,11 @@ export function StandupView({ config }: Props) {
           </button>
         </div>
       </div>
+
+      {/* Error */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+      )}
 
       {/* Member cards */}
       {loading ? (

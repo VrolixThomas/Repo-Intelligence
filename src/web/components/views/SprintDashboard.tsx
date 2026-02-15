@@ -22,14 +22,19 @@ const statusColors: Record<string, string> = {
 export function SprintDashboard({ config, sprint, onNavigate }: Props) {
   const [detail, setDetail] = useState<SprintDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchSprintDetail(sprint.id).then((d) => {
       setDetail(d);
-      setLoading(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, [sprint.id]);
+
+  if (error) return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+  );
 
   if (loading || !detail) {
     return (

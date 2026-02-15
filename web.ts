@@ -8,6 +8,7 @@ import {
   getTicketsByKeys,
   getCommitsPaginated,
   getMemberStats,
+  getAllMemberStats,
   getMemberCommits,
   getMemberBranches,
   getMemberTicketSummaries,
@@ -126,12 +127,7 @@ Bun.serve({
     }
 
     if (path === "/api/team") {
-      const members = [];
-      for (const t of config.team) {
-        const stats = await getMemberStats(t.emails);
-        members.push({ name: t.name, emails: t.emails, ...stats });
-      }
-      return json(members);
+      return json(await getAllMemberStats(config.team));
     }
 
     // /api/team/:name
@@ -160,15 +156,15 @@ Bun.serve({
     if (path === "/api/tickets/by-status") {
       const params = getParams(url);
       const sprintIdParam = params.get("sprintId");
-      let grouped;
-      if (sprintIdParam) {
-        grouped = await getSprintTicketsGrouped(Number(sprintIdParam));
-      } else {
-        grouped = await getReferencedTicketsGrouped();
-      }
+      const grouped = sprintIdParam
+        ? await getSprintTicketsGrouped(Number(sprintIdParam))
+        : await getReferencedTicketsGrouped();
       const allKeys = Object.values(grouped).flat().map((t) => t.jiraKey);
-      const commitCounts = await getTicketCommitCounts(allKeys);
-      const lifecycleRows = await getTicketLifecycleMetrics(allKeys);
+      // Parallelize commit counts and lifecycle metrics
+      const [commitCounts, lifecycleRows] = await Promise.all([
+        getTicketCommitCounts(allKeys),
+        getTicketLifecycleMetrics(allKeys),
+      ]);
       const lifecycle: Record<string, { durationDays: number; durationHours: number; idleDays: number; firstCommitDate: string; lastCommitDate: string }> = {};
       for (const row of lifecycleRows) {
         lifecycle[row.jiraKey] = {
@@ -193,10 +189,8 @@ Bun.serve({
     }
 
     if (path === "/api/filters") {
-      return json({
-        repos: await getDistinctRepos(),
-        authors: await getDistinctAuthors(),
-      });
+      const [repos, authors] = await Promise.all([getDistinctRepos(), getDistinctAuthors()]);
+      return json({ repos, authors });
     }
 
     // ── Sprint API ──────────────────────────────────────────────────
@@ -216,10 +210,13 @@ Bun.serve({
       const sprintId = Number(sprintMatch[1]);
       const sprint = await getSprintById(sprintId);
       if (!sprint) return json({ error: "Sprint not found" }, 404);
-      const sprintTicketList = await getSprintTickets(sprintId);
-      const sprintBranches = await getSprintBranches(sprintId);
-      const sprintCommits = await getSprintCommits(sprintId);
-      const ticketKeys = await getSprintTicketKeys(sprintId);
+      // Parallelize independent queries
+      const [sprintTicketList, sprintBranches, sprintCommits, ticketKeys] = await Promise.all([
+        getSprintTickets(sprintId),
+        getSprintBranches(sprintId),
+        getSprintCommits(sprintId),
+        getSprintTicketKeys(sprintId),
+      ]);
       const commitCounts = await getTicketCommitCounts(ticketKeys);
       return json({
         sprint,

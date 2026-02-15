@@ -75,7 +75,7 @@ function TicketDetailPanel({
 }) {
   const [summaries, setSummaries] = useState<TicketSummary[]>([]);
   useEffect(() => {
-    fetchTicketSummaries({ jiraKey: metric.jiraKey }).then(setSummaries);
+    fetchTicketSummaries({ jiraKey: metric.jiraKey }).then(setSummaries).catch(() => {});
   }, [metric.jiraKey]);
 
   const emailToName = new Map<string, string>();
@@ -185,6 +185,7 @@ function TicketDetailPanel({
 export function TicketLifecycleView({ config, sprintId }: Props) {
   const [data, setData] = useState<TicketLifecycleResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useState("idle");
   const [staleThreshold, setStaleThreshold] = useState(7);
   const [staleOnly, setStaleOnly] = useState(false);
@@ -192,14 +193,14 @@ export function TicketLifecycleView({ config, sprintId }: Props) {
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchTicketLifecycle({
       sprintId: sprintId ?? undefined,
       sort,
       staleThreshold,
     }).then((d) => {
       setData(d);
-      setLoading(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, [sprintId, sort, staleThreshold]);
 
   // Escape key to close drawer
@@ -215,6 +216,10 @@ export function TicketLifecycleView({ config, sprintId }: Props) {
   if (loading || !data) {
     return <div className="text-gray-500 text-center py-12">Loading lifecycle data...</div>;
   }
+
+  if (error) return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+  );
 
   const displayMetrics = staleOnly ? data.metrics.filter((m) => m.isStale) : data.metrics;
   const selectedMetric = selectedKey ? data.metrics.find((m) => m.jiraKey === selectedKey) : null;

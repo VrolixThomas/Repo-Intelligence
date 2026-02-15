@@ -22,6 +22,7 @@ export function CommitLog({ config }: Props) {
   const [filterUntil, setFilterUntil] = useState("");
   const [filterSearch, setFilterSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Build email->name map
   const emailToName = new Map<string, string>();
@@ -35,11 +36,12 @@ export function CommitLog({ config }: Props) {
     fetchFilters().then((f) => {
       setRepos(f.repos);
       setAuthors(f.authors);
-    });
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchCommits({
       page,
       pageSize: PAGE_SIZE,
@@ -51,8 +53,7 @@ export function CommitLog({ config }: Props) {
     }).then((data) => {
       setCommits(data.commits);
       setTotal(data.total);
-      setLoading(false);
-    });
+    }).catch((err: any) => setError(err?.message ?? "Failed to load data")).finally(() => setLoading(false));
   }, [page, filterRepo, filterAuthor, filterSince, filterUntil, filterSearch]);
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
@@ -67,6 +68,10 @@ export function CommitLog({ config }: Props) {
         <h2 className="text-xl font-bold text-gray-900">Commit Log</h2>
         <p className="text-sm text-gray-500 mt-1">Browse and filter all tracked commits</p>
       </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm mb-4">{error}</div>
+      )}
 
       {/* Filter bar */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 mb-4">
