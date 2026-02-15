@@ -94,10 +94,12 @@ Bun.serve({
     const runMatch = path.match(/^\/api\/runs\/(\d+)$/);
     if (runMatch) {
       const runId = Number(runMatch[1]);
-      const run = await getRunById(runId);
+      const [run, runTicketSummaries, runCommits] = await Promise.all([
+        getRunById(runId),
+        getTicketSummariesForRun(runId),
+        getCommitsForRun(runId),
+      ]);
       if (!run) return json({ error: "Run not found" }, 404);
-      const runTicketSummaries = await getTicketSummariesForRun(runId);
-      const runCommits = await getCommitsForRun(runId);
       const jiraKeys = new Set<string>();
       for (const c of runCommits) {
         if (c.jiraKeys) {
@@ -139,10 +141,12 @@ Bun.serve({
       const params = getParams(url);
       const page = Number(params.get("page") ?? "1");
       const pageSize = Number(params.get("pageSize") ?? "20");
-      const stats = await getMemberStats(member.emails);
-      const commitData = await getMemberCommits(member.emails, page, pageSize);
-      const memberBranches = await getMemberBranches(member.emails);
-      const memberTicketSummaries = await getMemberTicketSummaries(member.emails, 5);
+      const [stats, commitData, memberBranches, memberTicketSummaries] = await Promise.all([
+        getMemberStats(member.emails),
+        getMemberCommits(member.emails, page, pageSize),
+        getMemberBranches(member.emails),
+        getMemberTicketSummaries(member.emails, 5),
+      ]);
       return json({
         name: member.name,
         emails: member.emails,

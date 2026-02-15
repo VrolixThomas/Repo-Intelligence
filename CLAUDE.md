@@ -155,8 +155,8 @@ src/
 - **Cron mode**: timezone-aware scheduling via `Intl.DateTimeFormat`, `Bun.sleep` loop, auto-detects sprint close and triggers summary generation
 - **Web**: React SPA + Tailwind via `bun-plugin-tailwind`, served by `Bun.serve()` with JSON API. Hash-based routing. Pure SVG charts (no D3/recharts)
 - **View error handling**: All view components use `error` state (`string | null`), `.catch()` on every `.then()` chain, `.finally(() => setLoading(false))` to always clear loading, and display a red error banner when error is set. Reset `setError(null)` at the start of each fetch useEffect. Non-critical fetches (e.g. ticket summaries in drawer, PR filters) use `.catch(() => {})` to silently swallow errors.
-- **Batch queries over N+1**: `getBranchesWithCommits()`, `getSprintBranches()`, `getEnrichedDailyActivity()`, `getStandupData()` batch-fetch all data (commits, branches, tickets, PRs) in 2-5 queries then assemble in JS, instead of per-item loops. `getSprintBurndown()` batch-fetches status changes. `getAllMemberStats()` aggregates in 3 queries instead of 3*N.
-- **Parallel endpoint queries**: `web.ts` uses `Promise.all()` for independent queries in `/api/sprints/:id`, `/api/tickets/by-status`, `/api/filters`
+- **Batch queries over N+1**: All read-path queries (`getBranchesWithCommits()`, `getSprintBranches()`, `getEnrichedDailyActivity()`, `getStandupData()`, `getSprintBurndown()`, `getAllMemberStats()`, `getMemberTicketSummaries()`, `getTicketLifecycleMetrics()`, `getPRDashboardStats()`, `getSprintMemberContributions()`) batch-fetch data in 1-5 queries then assemble in JS. All write-path upserts (`updateBranches()`, `upsertTickets()`, `upsertSprints()`, `upsertSprintTickets()`, `upsertPullRequests()`, `storePRActivities()`, `upsertTicketStatusChanges()`) batch-fetch existing records then bulk insert new ones. `computeAndCachePRMetrics()` computes TTFR/TTM/rounds in parallel.
+- **Parallel endpoint queries**: `web.ts` uses `Promise.all()` for independent queries in `/api/sprints/:id`, `/api/tickets/by-status`, `/api/filters`, `/api/runs/:id`, `/api/team/:name`
 
 ## TypeScript
 
@@ -288,6 +288,7 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 11. Cron mode + standup view + sprint summary (daily scheduler, StandupView, Claude-generated sprint summaries, auto-trigger on sprint close)
 12. Supabase migration (SQLite → PostgreSQL via postgres.js, all queries async, Supabase CLI migrations)
 13. Dashboard loading fix (frontend error handling on all 12 views + app.tsx, N+1 query elimination in queries.ts, endpoint parallelization in web.ts)
+14. Full N+1 audit (batch all write-path upserts, parallelize getPRDashboardStats/computeAndCachePRMetrics, batch getSprintBurndown commit counts, batch getSprintMemberContributions PR counts, filter getTicketLifecycleMetrics branch query, parallelize /api/runs/:id and /api/team/:name, remove dead getTeamDailyActivity)
 
 ## Key Gotchas
 

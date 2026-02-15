@@ -39,3 +39,9 @@ config.toml
 
 # SQLite leftover files
 data/*
+
+.superset
+
+.cursor
+
+.claude

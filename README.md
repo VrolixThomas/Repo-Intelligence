@@ -406,3 +406,4 @@ All endpoints served by `web.ts` at `http://localhost:{port}/api/`.
 - **Sequential Claude invocations**: One ticket at a time to respect rate limits
 - **Disposable DB**: Schema managed by Supabase CLI migrations, DB can be reset and rebuilt anytime
 - **Async DB queries**: All database operations are async via postgres.js connection pool
+- **Batch over N+1**: All read and write-path queries batch-fetch existing records upfront, then assemble/upsert in JS — no per-item SELECT loops. Independent queries parallelized with `Promise.all()`
