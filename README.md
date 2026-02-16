@@ -402,6 +402,14 @@ All endpoints served by `web.ts` at `http://localhost:{port}/api/`.
 - **Jira**: REST API v3 + Agile API v1 with Basic Auth
 - **Bitbucket**: REST API v2 with Basic Auth (email + API token)
 
+### Performance Indexes
+
+Key indexes beyond primary keys and unique constraints:
+- `commits(timestamp)` — all analytics, calendar, sprint-scoped queries
+- `commits(author_email, timestamp)` — member queries with timestamp range/sort
+- `branches(jira_key)` — sprint-scoped branch queries
+- `branches(is_active, author_email)` — member stats, standup, branch view
+
 ### Key Design Decisions
 
 - **Delta detection**: SELECT existing SHAs before INSERT — only new commits are processed each run
