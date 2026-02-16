@@ -6,6 +6,29 @@ import type { TicketData, StatusChange } from "../jira/tickets";
 import type { PullRequestData, PullRequestFullData } from "../bitbucket/pullrequests";
 import type { PRActivityEntry } from "../bitbucket/pr-activity";
 
+// ── Query Options (lite mode excludes heavy text columns) ────────────────────
+
+export interface QueryOpts { lite?: boolean; noRelations?: boolean; }
+
+const TICKET_LITE_COLS = {
+  id: tickets.id, jiraKey: tickets.jiraKey, summary: tickets.summary,
+  description: tickets.description, status: tickets.status, assignee: tickets.assignee,
+  priority: tickets.priority, ticketType: tickets.ticketType, parentKey: tickets.parentKey,
+  subtasks: tickets.subtasks, labels: tickets.labels,
+  lastFetched: tickets.lastFetched, lastJiraUpdated: tickets.lastJiraUpdated,
+  // EXCLUDED: commentsJson, dataJson
+} as const;
+
+const COMMIT_LITE_COLS = {
+  id: commits.id, sha: commits.sha, shortSha: commits.shortSha,
+  repo: commits.repo, branch: commits.branch,
+  authorName: commits.authorName, authorEmail: commits.authorEmail,
+  message: commits.message, timestamp: commits.timestamp,
+  filesChanged: commits.filesChanged, insertions: commits.insertions, deletions: commits.deletions,
+  firstSeenRun: commits.firstSeenRun, jiraKeys: commits.jiraKeys,
+  // EXCLUDED: diffSummary
+} as const;
+
 // ── Run Lifecycle ─────────────────────────────────────────────────────────────
 
 export async function startRun(scanSince?: string, scanUntil?: string): Promise<number> {
@@ -195,10 +218,9 @@ export async function updateBranchPR(repoName: string, branchName: string, pr: P
 
 // ── Query Helpers ─────────────────────────────────────────────────────────────
 
-export async function getCommitsForRun(runId: number) {
+export async function getCommitsForRun(runId: number, opts?: QueryOpts) {
   const db = getDb();
-  return await db
-    .select()
+  return await (opts?.lite ? db.select(COMMIT_LITE_COLS) : db.select())
     .from(commits)
     .where(eq(commits.firstSeenRun, runId))
     .orderBy(commits.repo, commits.authorEmail, commits.timestamp);
@@ -303,16 +325,15 @@ export async function upsertTickets(ticketData: TicketData[]): Promise<void> {
   await upsertTicketStatusChangesBatch(ticketData);
 }
 
-export async function getTicketsByKeys(jiraKeys: string[]) {
+export async function getTicketsByKeys(jiraKeys: string[], opts?: QueryOpts) {
   if (jiraKeys.length === 0) return [];
 
   const db = getDb();
-  const results: (typeof tickets.$inferSelect)[] = [];
+  const results: any[] = [];
 
   for (let i = 0; i < jiraKeys.length; i += SHA_CHUNK_SIZE) {
     const chunk = jiraKeys.slice(i, i + SHA_CHUNK_SIZE);
-    const rows = await db
-      .select()
+    const rows = await (opts?.lite ? db.select(TICKET_LITE_COLS) : db.select())
       .from(tickets)
       .where(inArray(tickets.jiraKey, chunk));
     results.push(...rows);
@@ -441,8 +462,9 @@ export interface CommitFilter {
 export async function getCommitsPaginated(
   filter: CommitFilter,
   page: number,
-  pageSize: number
-): Promise<{ commits: (typeof commits.$inferSelect)[]; total: number }> {
+  pageSize: number,
+  opts?: QueryOpts
+): Promise<{ commits: any[]; total: number }> {
   const db = getDb();
   const conditions = [TEST_REPO_FILTER];
 
@@ -461,8 +483,7 @@ export async function getCommitsPaginated(
   const total = totalResult?.count ?? 0;
 
   const offset = (page - 1) * pageSize;
-  const rows = await db
-    .select()
+  const rows = await (opts?.lite ? db.select(COMMIT_LITE_COLS) : db.select())
     .from(commits)
     .where(where)
     .orderBy(desc(commits.timestamp))
@@ -556,8 +577,9 @@ export async function getAllMemberStats(
 export async function getMemberCommits(
   emails: string[],
   page: number,
-  pageSize: number
-): Promise<{ commits: (typeof commits.$inferSelect)[]; total: number }> {
+  pageSize: number,
+  opts?: QueryOpts
+): Promise<{ commits: any[]; total: number }> {
   if (emails.length === 0) return { commits: [], total: 0 };
   const db = getDb();
 
@@ -568,8 +590,7 @@ export async function getMemberCommits(
   const total = totalResult?.count ?? 0;
 
   const offset = (page - 1) * pageSize;
-  const rows = await db
-    .select()
+  const rows = await (opts?.lite ? db.select(COMMIT_LITE_COLS) : db.select())
     .from(commits)
     .where(and(inArray(commits.authorEmail, emails), TEST_REPO_FILTER))
     .orderBy(desc(commits.timestamp))
@@ -722,7 +743,7 @@ export async function getDistinctAuthors(): Promise<string[]> {
 
 // ── Referenced Tickets (for dashboard) ────────────────────────────────────────
 
-export async function getReferencedTicketsGrouped(): Promise<Record<string, (typeof tickets.$inferSelect)[]>> {
+export async function getReferencedTicketsGrouped(opts?: QueryOpts): Promise<Record<string, any[]>> {
   const db = getDb();
 
   // Collect all jira_keys from non-test-repo commits
@@ -743,17 +764,16 @@ export async function getReferencedTicketsGrouped(): Promise<Record<string, (typ
   if (referencedKeys.size === 0) return {};
 
   const keyArray = [...referencedKeys];
-  const ticketRows: (typeof tickets.$inferSelect)[] = [];
+  const ticketRows: any[] = [];
   for (let i = 0; i < keyArray.length; i += SHA_CHUNK_SIZE) {
     const chunk = keyArray.slice(i, i + SHA_CHUNK_SIZE);
-    const found = await db
-      .select()
+    const found = await (opts?.lite ? db.select(TICKET_LITE_COLS) : db.select())
       .from(tickets)
       .where(inArray(tickets.jiraKey, chunk));
     ticketRows.push(...found);
   }
 
-  const grouped: Record<string, (typeof tickets.$inferSelect)[]> = {};
+  const grouped: Record<string, any[]> = {};
   for (const t of ticketRows) {
     const status = t.status ?? "Unknown";
     if (!grouped[status]) grouped[status] = [];
@@ -773,7 +793,7 @@ export interface BranchWithCommitsResult {
 export async function getBranchesWithCommits(filter?: {
   repo?: string;
   authorEmail?: string;
-}): Promise<BranchWithCommitsResult[]> {
+}, opts?: QueryOpts): Promise<BranchWithCommitsResult[]> {
   const db = getDb();
 
   const conditions = [
@@ -793,12 +813,11 @@ export async function getBranchesWithCommits(filter?: {
 
   // Batch fetch all commits for these branches using OR conditions (chunked)
   const branchPairs = branchRows.map((b) => ({ repo: b.repo, name: b.name }));
-  const allCommits: (typeof commits.$inferSelect)[] = [];
+  const allCommits: any[] = [];
   for (let i = 0; i < branchPairs.length; i += SHA_CHUNK_SIZE) {
     const chunk = branchPairs.slice(i, i + SHA_CHUNK_SIZE);
     const orConditions = chunk.map((bp) => and(eq(commits.repo, bp.repo), eq(commits.branch, bp.name)));
-    const rows = await db
-      .select()
+    const rows = await (opts?.lite ? db.select(COMMIT_LITE_COLS) : db.select())
       .from(commits)
       .where(or(...orConditions))
       .orderBy(desc(commits.timestamp));
@@ -806,7 +825,7 @@ export async function getBranchesWithCommits(filter?: {
   }
 
   // Index commits by repo::branch
-  const commitsByBranch = new Map<string, (typeof commits.$inferSelect)[]>();
+  const commitsByBranch = new Map<string, any[]>();
   for (const c of allCommits) {
     const key = `${c.repo}::${c.branch}`;
     let arr = commitsByBranch.get(key);
@@ -816,11 +835,11 @@ export async function getBranchesWithCommits(filter?: {
 
   // Batch fetch all tickets by jiraKey
   const jiraKeys = [...new Set(branchRows.map((b) => b.jiraKey).filter((k): k is string => !!k))];
-  const ticketMap = new Map<string, typeof tickets.$inferSelect>();
+  const ticketMap = new Map<string, any>();
   if (jiraKeys.length > 0) {
     for (let i = 0; i < jiraKeys.length; i += SHA_CHUNK_SIZE) {
       const chunk = jiraKeys.slice(i, i + SHA_CHUNK_SIZE);
-      const ticketRows = await db.select().from(tickets).where(inArray(tickets.jiraKey, chunk));
+      const ticketRows = await (opts?.lite ? db.select(TICKET_LITE_COLS) : db.select()).from(tickets).where(inArray(tickets.jiraKey, chunk));
       for (const t of ticketRows) ticketMap.set(t.jiraKey, t);
     }
   }
@@ -932,16 +951,15 @@ export async function getSprintTicketKeys(sprintId: number): Promise<string[]> {
   return rows.map((r) => r.jiraKey);
 }
 
-export async function getSprintTickets(sprintId: number) {
+export async function getSprintTickets(sprintId: number, opts?: QueryOpts) {
   const db = getDb();
   const keys = await getSprintTicketKeys(sprintId);
   if (keys.length === 0) return [];
 
-  const results: (typeof tickets.$inferSelect)[] = [];
+  const results: any[] = [];
   for (let i = 0; i < keys.length; i += SHA_CHUNK_SIZE) {
     const chunk = keys.slice(i, i + SHA_CHUNK_SIZE);
-    const rows = await db
-      .select()
+    const rows = await (opts?.lite ? db.select(TICKET_LITE_COLS) : db.select())
       .from(tickets)
       .where(inArray(tickets.jiraKey, chunk));
     results.push(...rows);
@@ -951,7 +969,7 @@ export async function getSprintTickets(sprintId: number) {
 
 // ── Sprint-Scoped Queries ───────────────────────────────────────────────────
 
-export async function getSprintCommits(sprintId: number) {
+export async function getSprintCommits(sprintId: number, opts?: QueryOpts) {
   const db = getDb();
   const sprint = await getSprintById(sprintId);
   if (!sprint) return [];
@@ -974,21 +992,20 @@ export async function getSprintCommits(sprintId: number) {
   const likeConditions = ticketKeys.map((key) => like(commits.jiraKeys, `%${key}%`));
   conditions.push(or(...likeConditions)!);
 
-  const filteredCommits = await db
-    .select()
+  const filteredCommits = await (opts?.lite ? db.select(COMMIT_LITE_COLS) : db.select())
     .from(commits)
     .where(and(...conditions))
     .orderBy(desc(commits.timestamp));
 
   // Post-filter for exact key match (LIKE can false-match shorter keys)
   const keySet = new Set(ticketKeys);
-  return filteredCommits.filter((c) => {
+  return filteredCommits.filter((c: any) => {
     if (!c.jiraKeys) return false;
-    return c.jiraKeys.split(",").some((k) => keySet.has(k.trim()));
+    return c.jiraKeys.split(",").some((k: string) => keySet.has(k.trim()));
   });
 }
 
-export async function getSprintBranches(sprintId: number): Promise<BranchWithCommitsResult[]> {
+export async function getSprintBranches(sprintId: number, opts?: QueryOpts): Promise<BranchWithCommitsResult[]> {
   const db = getDb();
   const ticketKeys = await getSprintTicketKeys(sprintId);
   if (ticketKeys.length === 0) return [];
@@ -1013,17 +1030,22 @@ export async function getSprintBranches(sprintId: number): Promise<BranchWithCom
 
   if (allBranchRows.length === 0) return [];
 
+  // When noRelations is set, skip expensive commit/ticket batch-fetches
+  if (opts?.noRelations) {
+    return allBranchRows.map((branch) => ({ branch, branchCommits: [], ticket: null }));
+  }
+
   // Batch fetch all commits for these branches
   const branchPairs = allBranchRows.map((b) => ({ repo: b.repo, name: b.name }));
-  const allCommits: (typeof commits.$inferSelect)[] = [];
+  const allCommits: any[] = [];
   for (let i = 0; i < branchPairs.length; i += SHA_CHUNK_SIZE) {
     const chunk = branchPairs.slice(i, i + SHA_CHUNK_SIZE);
     const orConditions = chunk.map((bp) => and(eq(commits.repo, bp.repo), eq(commits.branch, bp.name)));
-    const rows = await db.select().from(commits).where(or(...orConditions)).orderBy(desc(commits.timestamp));
+    const rows = await (opts?.lite ? db.select(COMMIT_LITE_COLS) : db.select()).from(commits).where(or(...orConditions)).orderBy(desc(commits.timestamp));
     allCommits.push(...rows);
   }
 
-  const commitsByBranch = new Map<string, (typeof commits.$inferSelect)[]>();
+  const commitsByBranch = new Map<string, any[]>();
   for (const c of allCommits) {
     const key = `${c.repo}::${c.branch}`;
     let arr = commitsByBranch.get(key);
@@ -1033,11 +1055,11 @@ export async function getSprintBranches(sprintId: number): Promise<BranchWithCom
 
   // Batch fetch all tickets
   const jiraKeys = [...new Set(allBranchRows.map((b) => b.jiraKey).filter((k): k is string => !!k))];
-  const ticketMap = new Map<string, typeof tickets.$inferSelect>();
+  const ticketMap = new Map<string, any>();
   if (jiraKeys.length > 0) {
     for (let i = 0; i < jiraKeys.length; i += SHA_CHUNK_SIZE) {
       const chunk = jiraKeys.slice(i, i + SHA_CHUNK_SIZE);
-      const ticketRows = await db.select().from(tickets).where(inArray(tickets.jiraKey, chunk));
+      const ticketRows = await (opts?.lite ? db.select(TICKET_LITE_COLS) : db.select()).from(tickets).where(inArray(tickets.jiraKey, chunk));
       for (const t of ticketRows) ticketMap.set(t.jiraKey, t);
     }
   }
@@ -1068,7 +1090,8 @@ export interface EnrichedDailyActivity {
 
 export async function getEnrichedDailyActivity(
   team: { name: string; emails: string[] }[],
-  date: string
+  date: string,
+  opts?: QueryOpts
 ): Promise<EnrichedDailyActivity[]> {
   const db = getDb();
   const nextDate = new Date(new Date(date).getTime() + 86_400_000).toISOString().split("T")[0]!;
@@ -1079,8 +1102,7 @@ export async function getEnrichedDailyActivity(
     return team.map((member) => ({ member, commits: [], branches: [], tickets: [], ticketSummaries: [] }));
   }
 
-  const allDayCommits = await db
-    .select()
+  const allDayCommits = await (opts?.lite ? db.select(COMMIT_LITE_COLS) : db.select())
     .from(commits)
     .where(and(
       inArray(commits.authorEmail, allEmails),
@@ -1091,7 +1113,7 @@ export async function getEnrichedDailyActivity(
     .orderBy(desc(commits.timestamp));
 
   // Index commits by email
-  const commitsByEmail = new Map<string, (typeof commits.$inferSelect)[]>();
+  const commitsByEmail = new Map<string, any[]>();
   for (const c of allDayCommits) {
     let arr = commitsByEmail.get(c.authorEmail);
     if (!arr) { arr = []; commitsByEmail.set(c.authorEmail, arr); }
@@ -1129,9 +1151,9 @@ export async function getEnrichedDailyActivity(
     if (b.jiraKey) allTicketKeySet.add(b.jiraKey);
   }
   const allTicketKeys = [...allTicketKeySet];
-  const ticketMap = new Map<string, typeof tickets.$inferSelect>();
+  const ticketMap = new Map<string, any>();
   if (allTicketKeys.length > 0) {
-    const ticketRows = await getTicketsByKeys(allTicketKeys);
+    const ticketRows = await getTicketsByKeys(allTicketKeys, opts);
     for (const t of ticketRows) ticketMap.set(t.jiraKey, t);
   }
 
@@ -1146,7 +1168,7 @@ export async function getEnrichedDailyActivity(
       continue;
     }
 
-    const dayCommits: (typeof commits.$inferSelect)[] = [];
+    const dayCommits: any[] = [];
     for (const email of member.emails) {
       const emailCommits = commitsByEmail.get(email);
       if (emailCommits) dayCommits.push(...emailCommits);
@@ -1400,9 +1422,9 @@ export async function getTicketLifecycleForSprint(sprintId: number): Promise<Tic
   return getTicketLifecycleMetrics(keys);
 }
 
-export async function getSprintTicketsGrouped(sprintId: number): Promise<Record<string, (typeof tickets.$inferSelect)[]>> {
-  const sprintTicketList = await getSprintTickets(sprintId);
-  const grouped: Record<string, (typeof tickets.$inferSelect)[]> = {};
+export async function getSprintTicketsGrouped(sprintId: number, opts?: QueryOpts): Promise<Record<string, any[]>> {
+  const sprintTicketList = await getSprintTickets(sprintId, opts);
+  const grouped: Record<string, any[]> = {};
   for (const t of sprintTicketList) {
     const status = t.status ?? "Unknown";
     if (!grouped[status]) grouped[status] = [];
@@ -1795,7 +1817,7 @@ export async function getPullRequestsPaginated(
   return { pullRequests: rows, total };
 }
 
-export async function getPullRequestDetail(prRowId: number) {
+export async function getPullRequestDetail(prRowId: number, opts?: QueryOpts) {
   const db = getDb();
   const [pr] = await db.select().from(pullRequests).where(eq(pullRequests.id, prRowId));
   if (!pr) return null;
@@ -1813,15 +1835,14 @@ export async function getPullRequestDetail(prRowId: number) {
     .where(and(eq(branches.repo, pr.repo), eq(branches.name, pr.sourceBranch)));
 
   // Find linked ticket via branch jiraKey
-  let ticket: (typeof tickets.$inferSelect) | null = null;
+  let ticket: any = null;
   if (branch?.jiraKey) {
-    const [ticketRow] = await db.select().from(tickets).where(eq(tickets.jiraKey, branch.jiraKey));
+    const [ticketRow] = await (opts?.lite ? db.select(TICKET_LITE_COLS) : db.select()).from(tickets).where(eq(tickets.jiraKey, branch.jiraKey));
     ticket = ticketRow ?? null;
   }
 
   // Find commits on this branch
-  const branchCommits = await db
-    .select()
+  const branchCommits = await (opts?.lite ? db.select(COMMIT_LITE_COLS) : db.select())
     .from(commits)
     .where(and(eq(commits.repo, pr.repo), eq(commits.branch, pr.sourceBranch)))
     .orderBy(desc(commits.timestamp));
@@ -2540,7 +2561,8 @@ export interface StandupMemberData {
 
 export async function getStandupData(
   team: { name: string; emails: string[] }[],
-  date: string
+  date: string,
+  opts?: QueryOpts
 ): Promise<StandupMemberData[]> {
   const db = getDb();
   const now = Date.now();
@@ -2562,7 +2584,7 @@ export async function getStandupData(
 
   // ── Batch 1: Fetch all yesterday commits, status changes, branches, author names in parallel ──
   const [allYesterdayCommits, allYesterdayChanges, allMemberBranches, authorNameRows] = await Promise.all([
-    db.select().from(commits).where(and(
+    (opts?.lite ? db.select(COMMIT_LITE_COLS) : db.select()).from(commits).where(and(
       inArray(commits.authorEmail, allEmails),
       gte(commits.timestamp, yesterdayDate),
       lte(commits.timestamp, nextDay + "T00:00:00.000Z"),
@@ -2587,7 +2609,7 @@ export async function getStandupData(
   ]);
 
   // Index by email
-  const commitsByEmail = new Map<string, (typeof commits.$inferSelect)[]>();
+  const commitsByEmail = new Map<string, any[]>();
   for (const c of allYesterdayCommits) {
     let arr = commitsByEmail.get(c.authorEmail);
     if (!arr) { arr = []; commitsByEmail.set(c.authorEmail, arr); }
@@ -2631,7 +2653,7 @@ export async function getStandupData(
 
   // Batch fetch tickets, summaries, merged PRs, and open PRs in parallel
   const [allTicketRows, allSummaries, allMergedPRs, allOpenPRs] = await Promise.all([
-    allTicketKeys.length > 0 ? getTicketsByKeys(allTicketKeys) : Promise.resolve([]),
+    allTicketKeys.length > 0 ? getTicketsByKeys(allTicketKeys, opts) : Promise.resolve([]),
     allTicketKeys.length > 0 ? getTicketSummariesByKeys(allTicketKeys) : Promise.resolve([]),
     allAuthorNameArr.length > 0 ? db.select({ prId: pullRequests.prId, title: pullRequests.title, repo: pullRequests.repo, authorName: pullRequests.authorName })
       .from(pullRequests)
@@ -2650,7 +2672,7 @@ export async function getStandupData(
   ]);
 
   // Build lookup maps
-  const ticketMap = new Map<string, typeof tickets.$inferSelect>();
+  const ticketMap = new Map<string, any>();
   for (const t of allTicketRows) ticketMap.set(t.jiraKey, t);
 
   const summaryMap = new Map<string, { jiraKey: string; summaryText: string }[]>();
@@ -2710,7 +2732,7 @@ export async function getStandupData(
     }
 
     // Gather member data from pre-fetched maps
-    const yesterdayCommits: (typeof commits.$inferSelect)[] = [];
+    const yesterdayCommits: any[] = [];
     const memberBranchesList: (typeof branches.$inferSelect)[] = [];
     const memberAuthorNames = new Set<string>();
     for (const email of member.emails) {

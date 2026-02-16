@@ -163,6 +163,8 @@ src/
 - **Parallel endpoint queries**: `web.ts` uses `Promise.all()` for independent queries in `/api/sprints/:id`, `/api/tickets/by-status`, `/api/filters`, `/api/runs/:id`, `/api/team/:name`
 - **Sprint-scoped PR stats**: `getSprintPRStats(sprintId)` computes merged count, avg merge time, and avg review rounds from PRs linked to sprint branches only (not global). Matches PRs by `(repo, prId)` pairs to avoid cross-repo PR number collisions. Used by sprint summary generation
 - **PR-to-member matching**: `getSprintMemberContributions()` matches PRs to members via branch `authorEmail` → `team[].emails`, NOT via `pullRequests.authorName` (Bitbucket display names don't match Git author names)
+- **API response trimming**: `web.ts` has one remaining trim helper — `trimTicketLite` (drops `description`/`subtasks`/`lastFetched` for lifecycle view). `trimTicketKeepDesc` and `trimCommitLite` were removed after DB-level column selection made them redundant
+- **DB column selection (lite mode)**: `QueryOpts { lite?: boolean; noRelations?: boolean }` in `queries.ts` — when `lite: true`, queries use `TICKET_LITE_COLS` (excludes `commentsJson`, `dataJson`) and `COMMIT_LITE_COLS` (excludes `diffSummary`) via conditional `db.select(COLS)` vs `db.select()`. When `noRelations: true`, `getSprintBranches` skips commit/ticket batch-fetches and returns empty arrays (used by `/api/sprints/:id` which only needs branch rows). `web.ts` passes `{ lite: true }` at 14 call sites. CLI callers (`scan.ts`, `sprint-summary.ts`, `claude/prompt.ts`) omit opts to get full data. Eliminates heavy column transfer from Supabase to server
 
 ## TypeScript
 
@@ -312,6 +314,8 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 15. Performance optimization (onConflictDoUpdate for updateBranches/upsertTickets/upsertSprints/upsertPullRequests, JQL bulk search for Jira tickets, SQL LIKE pre-filters for sprint commit queries, batch PR metrics via computeAndCachePRMetricsBatch, branches unique index migration)
 16. Performance indexes (commits timestamp + author_timestamp composite, branches jira_key + active_author composite — eliminates full table scans on dashboard queries)
 17. Data accuracy fixes (`getSprintPRStats` repo-scoped PR matching, sprint burndown scoped to sprint branches via `getSprintDailyCommitCounts`, `getSprintBranches` filters on `isActive`)
+18. Dashboard payload reduction (API response trimming in `web.ts` — strip `description`/`commentsJson`/`dataJson`/`diffSummary`/nested arrays at serialization boundary, ~4MB→<500KB initial load)
+19. DB column selection (push column exclusion down to SQL — `QueryOpts { lite?: boolean; noRelations?: boolean }` on 13 query functions, `web.ts` passes `{ lite: true }` at 14 call sites, excludes `commentsJson`/`dataJson`/`diffSummary` at DB level to reduce Supabase egress, `noRelations` skips commit/ticket batch-fetches in `getSprintBranches`, removed dead `trimTicketKeepDesc`/`trimCommitLite` helpers)
 
 ## Key Gotchas
 
