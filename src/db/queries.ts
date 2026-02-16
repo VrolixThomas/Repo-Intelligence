@@ -1066,6 +1066,7 @@ export async function getSprintBranches(sprintId: number): Promise<BranchWithCom
       .from(branches)
       .where(and(
         sql`${branches.repo} != 'test-repo'`,
+        eq(branches.isActive, 1),
         inArray(branches.jiraKey, chunk),
       ))
       .orderBy(desc(branches.lastSeen));
@@ -1278,6 +1279,69 @@ export async function getDailyCommitCounts(since: string, until: string): Promis
   );
 
   return rows as unknown as { date: string; count: number }[];
+}
+
+/** Sprint-scoped daily commit counts — only counts commits on branches linked to sprint tickets */
+export async function getSprintDailyCommitCounts(
+  since: string,
+  until: string,
+  ticketKeys: string[],
+): Promise<{ date: string; count: number }[]> {
+  if (ticketKeys.length === 0) return [];
+  const db = getDb();
+  const untilPlusOne = new Date(new Date(until).getTime() + 86_400_000).toISOString().split("T")[0]!;
+
+  // Get active branches linked to sprint tickets
+  const sprintBranches: { repo: string; name: string }[] = [];
+  for (let i = 0; i < ticketKeys.length; i += SHA_CHUNK_SIZE) {
+    const chunk = ticketKeys.slice(i, i + SHA_CHUNK_SIZE);
+    const rows = await db
+      .select({ repo: branches.repo, name: branches.name })
+      .from(branches)
+      .where(and(eq(branches.isActive, 1), inArray(branches.jiraKey, chunk)));
+    sprintBranches.push(...rows);
+  }
+
+  if (sprintBranches.length === 0) return [];
+
+  // Deduplicate branch pairs (same branch name could appear if re-created)
+  const seen = new Set<string>();
+  const uniqueBranches = sprintBranches.filter((b) => {
+    const key = `${b.repo}::${b.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // Query in chunks to avoid oversized SQL with many OR conditions
+  const allRows: { date: string; count: number }[] = [];
+  for (let i = 0; i < uniqueBranches.length; i += SHA_CHUNK_SIZE) {
+    const chunk = uniqueBranches.slice(i, i + SHA_CHUNK_SIZE);
+    const branchConditions = chunk.map((b) =>
+      sql`(${commits.repo} = ${b.repo} AND ${commits.branch} = ${b.name})`
+    );
+
+    const rows = await db.execute<{ date: string; count: number }>(
+      sql`SELECT DATE(${commits.timestamp}) as date, COUNT(*)::integer as count
+          FROM ${commits}
+          WHERE ${commits.timestamp} >= ${since}
+            AND ${commits.timestamp} < ${untilPlusOne}
+            AND ${commits.repo} != 'test-repo'
+            AND (${sql.join(branchConditions, sql` OR `)})
+          GROUP BY DATE(${commits.timestamp})
+          ORDER BY date ASC`
+    );
+    allRows.push(...(rows as unknown as { date: string; count: number }[]));
+  }
+
+  // Merge counts across chunks (same date can appear in multiple chunks)
+  const merged = new Map<string, number>();
+  for (const r of allRows) {
+    merged.set(r.date, (merged.get(r.date) ?? 0) + r.count);
+  }
+  return [...merged.entries()]
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 // ── Sprint-Scoped Ticket Board ──────────────────────────────────────────────
@@ -1835,33 +1899,41 @@ export async function getSprintPRStats(sprintId: number) {
     return { totalMerged: 0, avgTimeToMergeHours: 0, avgReviewRounds: 0 };
   }
 
-  // Collect prIds from branches linked to sprint tickets
-  const prIds: number[] = [];
+  // Collect (repo, prId) pairs from branches linked to sprint tickets
+  const prPairs: { repo: string; prId: number }[] = [];
   for (let i = 0; i < ticketKeys.length; i += SHA_CHUNK_SIZE) {
     const chunk = ticketKeys.slice(i, i + SHA_CHUNK_SIZE);
     const rows = await db
-      .select({ prId: branches.prId })
+      .select({ repo: branches.repo, prId: branches.prId })
       .from(branches)
       .where(and(inArray(branches.jiraKey, chunk), isNotNull(branches.prId)));
     for (const r of rows) {
-      if (r.prId != null) prIds.push(r.prId);
+      if (r.prId != null) prPairs.push({ repo: r.repo, prId: r.prId });
     }
   }
 
-  if (prIds.length === 0) {
+  if (prPairs.length === 0) {
     return { totalMerged: 0, avgTimeToMergeHours: 0, avgReviewRounds: 0 };
   }
 
-  // Query pullRequests for just these PR IDs (match on prId + repo)
-  // branches.prId stores the Bitbucket PR number, pullRequests.prId is the same
-  const sprintPRs = await db
-    .select({
-      state: pullRequests.state,
-      timeToMergeMins: pullRequests.timeToMergeMins,
-      reviewRounds: pullRequests.reviewRounds,
-    })
-    .from(pullRequests)
-    .where(inArray(pullRequests.prId, prIds));
+  // Query pullRequests matching both repo and prId to avoid cross-repo collisions
+  type PRStatRow = { state: string; timeToMergeMins: number | null; reviewRounds: number | null };
+  const sprintPRs: PRStatRow[] = [];
+  for (let i = 0; i < prPairs.length; i += SHA_CHUNK_SIZE) {
+    const chunk = prPairs.slice(i, i + SHA_CHUNK_SIZE);
+    const orConditions = chunk.map((p) =>
+      and(eq(pullRequests.repo, p.repo), eq(pullRequests.prId, p.prId))
+    );
+    const rows = await db
+      .select({
+        state: pullRequests.state,
+        timeToMergeMins: pullRequests.timeToMergeMins,
+        reviewRounds: pullRequests.reviewRounds,
+      })
+      .from(pullRequests)
+      .where(or(...orConditions));
+    sprintPRs.push(...rows);
+  }
 
   const merged = sprintPRs.filter((pr) => pr.state === "MERGED");
   const totalMerged = merged.length;
@@ -2184,7 +2256,7 @@ export async function getSprintBurndown(sprintId: number): Promise<{
   // Batch fetch all daily commit counts for the entire sprint range in one query
   const sprintStartDate = new Date(startMs).toISOString().split("T")[0]!;
   const sprintEndDate = new Date(endMs).toISOString().split("T")[0]!;
-  const allDailyCounts = await getDailyCommitCounts(sprintStartDate, sprintEndDate);
+  const allDailyCounts = await getSprintDailyCommitCounts(sprintStartDate, sprintEndDate, ticketKeys);
   const dailyCountMap = new Map<string, number>();
   for (const dc of allDailyCounts) {
     dailyCountMap.set(dc.date, dc.count);
