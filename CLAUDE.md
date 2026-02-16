@@ -157,7 +157,7 @@ src/
 - **View error handling**: All view components use `error` state (`string | null`), `.catch()` on every `.then()` chain, `.finally(() => setLoading(false))` to always clear loading, and display a red error banner when error is set. Reset `setError(null)` at the start of each fetch useEffect. Non-critical fetches (e.g. ticket summaries in drawer, PR filters) use `.catch(() => {})` to silently swallow errors.
 - **Batch queries over N+1**: All read-path queries (`getBranchesWithCommits()`, `getSprintBranches()`, `getEnrichedDailyActivity()`, `getStandupData()`, `getSprintBurndown()`, `getAllMemberStats()`, `getMemberTicketSummaries()`, `getTicketLifecycleMetrics()`, `getPRDashboardStats()`, `getSprintMemberContributions()`) batch-fetch data in 1-5 queries then assemble in JS. All write-path upserts (`updateBranches()`, `upsertTickets()`, `upsertSprints()`, `upsertSprintTickets()`, `upsertPullRequests()`, `storePRActivities()`, `upsertTicketStatusChanges()`) batch-fetch existing records then bulk insert new ones. `computeAndCachePRMetrics()` computes TTFR/TTM/rounds in parallel.
 - **Parallel endpoint queries**: `web.ts` uses `Promise.all()` for independent queries in `/api/sprints/:id`, `/api/tickets/by-status`, `/api/filters`, `/api/runs/:id`, `/api/team/:name`
-- **Sprint-scoped PR stats**: `getSprintPRStats(sprintId)` computes merged count, avg merge time, and avg review rounds from PRs linked to sprint branches only (not global). Used by sprint summary generation
+- **Sprint-scoped PR stats**: `getSprintPRStats(sprintId)` computes merged count, avg merge time, and avg review rounds from PRs linked to sprint branches only (not global). Matches PRs by `(repo, prId)` pairs to avoid cross-repo PR number collisions. Used by sprint summary generation
 - **PR-to-member matching**: `getSprintMemberContributions()` matches PRs to members via branch `authorEmail` → `team[].emails`, NOT via `pullRequests.authorName` (Bitbucket display names don't match Git author names)
 
 ## TypeScript
@@ -291,6 +291,7 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 12. Supabase migration (SQLite → PostgreSQL via postgres.js, all queries async, Supabase CLI migrations)
 13. Dashboard loading fix (frontend error handling on all 12 views + app.tsx, N+1 query elimination in queries.ts, endpoint parallelization in web.ts)
 14. Full N+1 audit (batch all write-path upserts, parallelize getPRDashboardStats/computeAndCachePRMetrics, batch getSprintBurndown commit counts, batch getSprintMemberContributions PR counts, filter getTicketLifecycleMetrics branch query, parallelize /api/runs/:id and /api/team/:name, remove dead getTeamDailyActivity)
+15. Data accuracy fixes (`getSprintPRStats` repo-scoped PR matching, sprint burndown scoped to sprint branches via `getSprintDailyCommitCounts`, `getSprintBranches` filters on `isActive`)
 
 ## Key Gotchas
 
@@ -312,3 +313,6 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 - Hash-based routing supports query params: `#members?name=John` — use `getHashParam()` in `app.tsx` to read them
 - SprintDashboard `buildMemberStats()` only includes `config.team` members — non-team commit authors are excluded
 - CalendarStrip arrow buttons navigate to previous/next day (not just scroll)
+- **PR IDs are per-repo** — always query `pullRequests` with both `repo` AND `prId`, never `prId` alone
+- **Sprint burndown commits** use `getSprintDailyCommitCounts` (scoped to sprint branches), not `getDailyCommitCounts` (global)
+- **Sprint branch queries** must filter `isActive = 1` to exclude deleted branches
