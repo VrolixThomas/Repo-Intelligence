@@ -195,7 +195,7 @@ Four tabs with pure SVG charts:
 - **Commit Velocity** — commits per member over time (line chart)
 - **Code Churn** — daily additions vs deletions (area chart)
 - **PR Cycle Time** — time to first review, time to merge, review rounds (bar chart)
-- **Sprint Burndown** — ticket completion over sprint duration (area chart)
+- **Sprint Burndown** — ticket completion over sprint duration (area chart). Commit counts scoped to sprint branches only
 
 ### Sprint Report (`#sprint-summary`)
 
@@ -401,6 +401,14 @@ All endpoints served by `web.ts` at `http://localhost:{port}/api/`.
 - **AI**: [Claude Code CLI](https://claude.ai/download) via `Bun.spawn()`
 - **Jira**: REST API v3 + Agile API v1 with Basic Auth
 - **Bitbucket**: REST API v2 with Basic Auth (email + API token)
+
+### Performance Indexes
+
+Key indexes beyond primary keys and unique constraints:
+- `commits(timestamp)` — all analytics, calendar, sprint-scoped queries
+- `commits(author_email, timestamp)` — member queries with timestamp range/sort
+- `branches(jira_key)` — sprint-scoped branch queries
+- `branches(is_active, author_email)` — member stats, standup, branch view
 
 ### Key Design Decisions
 

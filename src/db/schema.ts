@@ -35,8 +35,9 @@ export const commits = pgTable(
   (table) => [
     index("idx_commits_sha").on(table.sha),
     index("idx_commits_repo_branch").on(table.repo, table.branch),
-    index("idx_commits_author").on(table.authorEmail),
+    index("idx_commits_author_timestamp").on(table.authorEmail, table.timestamp),
     index("idx_commits_run").on(table.firstSeenRun),
+    index("idx_commits_timestamp").on(table.timestamp),
   ]
 );
 
@@ -66,6 +67,8 @@ export const branches = pgTable(
   },
   (table) => [
     uniqueIndex("idx_branches_repo_name_unique").on(table.repo, table.name),
+    index("idx_branches_jira_key").on(table.jiraKey),
+    index("idx_branches_active_author").on(table.isActive, table.authorEmail),
   ]
 );
 
