@@ -141,17 +141,41 @@ export async function fetchTickets(
   const tickets: TicketData[] = [];
   const errors: { key: string; status: number; message: string }[] = [];
 
-  // Sequential fetching to respect rate limits
-  for (const key of jiraKeys) {
-    const result = await fetchTicket(config, key);
+  // Bulk fetch using JQL search endpoint — chunk into batches of 100 (Jira's max per page)
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < jiraKeys.length; i += BATCH_SIZE) {
+    const batch = jiraKeys.slice(i, i + BATCH_SIZE);
+    const jql = `issueKey IN (${batch.join(",")})`;
+    const params = new URLSearchParams({
+      jql,
+      fields: FIELDS,
+      expand: "changelog",
+      maxResults: String(BATCH_SIZE),
+    });
+    const result = await jiraFetch(config, `/rest/api/3/search?${params}`);
 
     if (result.ok) {
-      tickets.push(result.ticket);
-    } else if (result.status === 404) {
-      // Skip deleted/not-found tickets silently
-      continue;
+      const issues: any[] = result.data.issues ?? [];
+      for (const issue of issues) {
+        const key = issue.key;
+        if (key) {
+          tickets.push(mapTicket(key, issue));
+        }
+      }
+      // Missing tickets simply won't appear in results (equivalent to 404-skip)
     } else {
-      errors.push({ key, status: result.status, message: result.message });
+      // Fallback: if bulk search fails for this batch, fetch individually
+      console.log(`  Jira bulk search failed (${result.status}), falling back to individual fetch for ${batch.length} tickets`);
+      for (const key of batch) {
+        const individual = await fetchTicket(config, key);
+        if (individual.ok) {
+          tickets.push(individual.ticket);
+        } else if (individual.status === 404) {
+          continue;
+        } else {
+          errors.push({ key, status: individual.status, message: individual.message });
+        }
+      }
     }
   }
 

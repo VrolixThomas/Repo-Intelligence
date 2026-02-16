@@ -15,7 +15,7 @@ import { groupByTeamMember } from "./src/git/author";
 import { getCommitDiff, getCommitDiffs } from "./src/git/diff";
 import { fetchLatest, resolveBaseBranch, getAggregateBranchDiff, recordRepoState, checkoutBranch, restoreRepoState } from "./src/git/branch-context";
 import type { BranchDiffContext } from "./src/git/branch-context";
-import { startRun, completeRun, storeCommits, updateBranches, updateBranchPR, getLastRun, getTotalCommitCount, getStaleTicketKeys, upsertTickets, getTicketsByKeys, storeTicketSummary, getTicketSummariesForRun, getLatestTicketSummary, setRunReportPath, upsertSprints, upsertSprintTickets, getSprintByJiraId, getAllSprints, getActiveSprint, upsertPullRequests, getStaleActivityPRs, storePRActivities, computeAndCachePRMetrics } from "./src/db/queries";
+import { startRun, completeRun, storeCommits, updateBranches, updateBranchPR, getLastRun, getTotalCommitCount, getStaleTicketKeys, upsertTickets, getTicketsByKeys, storeTicketSummary, getTicketSummariesForRun, getLatestTicketSummary, setRunReportPath, upsertSprints, upsertSprintTickets, getSprintByJiraId, getAllSprints, getActiveSprint, upsertPullRequests, getStaleActivityPRs, storePRActivities, computeAndCachePRMetricsBatch } from "./src/db/queries";
 import { getBranchesWithCommits } from "./src/db/queries";
 import { generateReport } from "./src/report";
 import { getJiraConfig, fetchTickets, filterAllowedKeys } from "./src/jira";
@@ -157,16 +157,21 @@ async function main() {
           const stalePRs = await getStaleActivityPRs(result.repoName);
           if (stalePRs.length > 0) {
             let totalActivities = 0;
+            const stalePRIds: number[] = [];
             for (const stalePR of stalePRs) {
               try {
                 const activities = await fetchPRActivity(bbConfig, result.repoName, stalePR.prId);
                 const inserted = await storePRActivities(stalePR.id, result.repoName, stalePR.prId, activities);
                 totalActivities += inserted;
-                await computeAndCachePRMetrics(stalePR.id);
-                await Bun.sleep(200);
+                stalePRIds.push(stalePR.id);
+                await Bun.sleep(200); // Rate limit Bitbucket API calls
               } catch (err: any) {
                 console.log(`  PR Activity: error for PR #${stalePR.prId} — ${err.message?.slice(0, 80)}`);
               }
+            }
+            // Batch compute metrics for all fetched PRs at once
+            if (stalePRIds.length > 0) {
+              await computeAndCachePRMetricsBatch(stalePRIds);
             }
             console.log(`  PR Activity: fetched for ${stalePRs.length} PRs, ${totalActivities} activities stored`);
           }

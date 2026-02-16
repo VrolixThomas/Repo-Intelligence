@@ -72,6 +72,7 @@ drizzle.config.ts            # Drizzle ORM config (PostgreSQL dialect)
 supabase/
   migrations/                # Supabase migration SQL files
     20260208000000_initial_schema.sql  # All 11 tables
+    20260215000000_branches_unique_constraint.sql  # Unique index on branches(repo, name)
     20260215000000_add_performance_indexes.sql  # Performance indexes for commits + branches
 data/
   reports/                   # Generated markdown reports
@@ -156,7 +157,9 @@ src/
 - **Cron mode**: timezone-aware scheduling via `Intl.DateTimeFormat`, `Bun.sleep` loop, auto-detects sprint close and triggers summary generation
 - **Web**: React SPA + Tailwind via `bun-plugin-tailwind`, served by `Bun.serve()` with JSON API. Hash-based routing. Pure SVG charts (no D3/recharts)
 - **View error handling**: All view components use `error` state (`string | null`), `.catch()` on every `.then()` chain, `.finally(() => setLoading(false))` to always clear loading, and display a red error banner when error is set. Reset `setError(null)` at the start of each fetch useEffect. Non-critical fetches (e.g. ticket summaries in drawer, PR filters) use `.catch(() => {})` to silently swallow errors.
-- **Batch queries over N+1**: All read-path queries (`getBranchesWithCommits()`, `getSprintBranches()`, `getEnrichedDailyActivity()`, `getStandupData()`, `getSprintBurndown()`, `getAllMemberStats()`, `getMemberTicketSummaries()`, `getTicketLifecycleMetrics()`, `getPRDashboardStats()`, `getSprintMemberContributions()`) batch-fetch data in 1-5 queries then assemble in JS. All write-path upserts (`updateBranches()`, `upsertTickets()`, `upsertSprints()`, `upsertSprintTickets()`, `upsertPullRequests()`, `storePRActivities()`, `upsertTicketStatusChanges()`) batch-fetch existing records then bulk insert new ones. `computeAndCachePRMetrics()` computes TTFR/TTM/rounds in parallel.
+- **Batch queries over N+1**: All read-path queries (`getBranchesWithCommits()`, `getSprintBranches()`, `getEnrichedDailyActivity()`, `getStandupData()`, `getSprintBurndown()`, `getAllMemberStats()`, `getMemberTicketSummaries()`, `getTicketLifecycleMetrics()`, `getPRDashboardStats()`, `getSprintMemberContributions()`) batch-fetch data in 1-5 queries then assemble in JS. Write-path upserts (`updateBranches()`, `upsertTickets()`, `upsertSprints()`, `upsertPullRequests()`) use `INSERT...ON CONFLICT DO UPDATE` for single-query upsert. `upsertSprintTickets()` uses `onConflictDoNothing`. `upsertTicketStatusChangesBatch()` flattens all ticket status changes across all tickets into one batch SELECT + one bulk INSERT. `storePRActivities()`, `upsertTicketStatusChanges()` batch-fetch existing records then bulk insert new ones. `computeAndCachePRMetricsBatch()` batch-fetches all PRs and activities in 2 queries then computes TTFR/TTM/rounds per PR.
+- **JQL bulk search**: `fetchTickets()` uses Jira `/rest/api/3/search` with `issueKey IN (...)` JQL — one HTTP request per 100 tickets instead of one per ticket. Falls back to individual fetching on error.
+- **SQL LIKE pre-filters**: `getSprintCommits()` and `getSprintMemberContributions()` add `OR(LIKE '%KEY-1%', LIKE '%KEY-2%', ...)` to narrow the SQL result set before JS post-filtering for exact key match.
 - **Parallel endpoint queries**: `web.ts` uses `Promise.all()` for independent queries in `/api/sprints/:id`, `/api/tickets/by-status`, `/api/filters`, `/api/runs/:id`, `/api/team/:name`
 - **Sprint-scoped PR stats**: `getSprintPRStats(sprintId)` computes merged count, avg merge time, and avg review rounds from PRs linked to sprint branches only (not global). Matches PRs by `(repo, prId)` pairs to avoid cross-repo PR number collisions. Used by sprint summary generation
 - **PR-to-member matching**: `getSprintMemberContributions()` matches PRs to members via branch `authorEmail` → `team[].emails`, NOT via `pullRequests.authorName` (Bitbucket display names don't match Git author names)
@@ -306,8 +309,9 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 12. Supabase migration (SQLite → PostgreSQL via postgres.js, all queries async, Supabase CLI migrations)
 13. Dashboard loading fix (frontend error handling on all 12 views + app.tsx, N+1 query elimination in queries.ts, endpoint parallelization in web.ts)
 14. Full N+1 audit (batch all write-path upserts, parallelize getPRDashboardStats/computeAndCachePRMetrics, batch getSprintBurndown commit counts, batch getSprintMemberContributions PR counts, filter getTicketLifecycleMetrics branch query, parallelize /api/runs/:id and /api/team/:name, remove dead getTeamDailyActivity)
-15. Performance indexes (commits timestamp + author_timestamp composite, branches jira_key + active_author composite — eliminates full table scans on dashboard queries)
-16. Data accuracy fixes (`getSprintPRStats` repo-scoped PR matching, sprint burndown scoped to sprint branches via `getSprintDailyCommitCounts`, `getSprintBranches` filters on `isActive`)
+15. Performance optimization (onConflictDoUpdate for updateBranches/upsertTickets/upsertSprints/upsertPullRequests, JQL bulk search for Jira tickets, SQL LIKE pre-filters for sprint commit queries, batch PR metrics via computeAndCachePRMetricsBatch, branches unique index migration)
+16. Performance indexes (commits timestamp + author_timestamp composite, branches jira_key + active_author composite — eliminates full table scans on dashboard queries)
+17. Data accuracy fixes (`getSprintPRStats` repo-scoped PR matching, sprint burndown scoped to sprint branches via `getSprintDailyCommitCounts`, `getSprintBranches` filters on `isActive`)
 
 ## Key Gotchas
 

@@ -422,3 +422,7 @@ Key indexes beyond primary keys and unique constraints:
 - **Disposable DB**: Schema managed by Supabase CLI migrations, DB can be reset and rebuilt anytime
 - **Async DB queries**: All database operations are async via postgres.js connection pool
 - **Batch over N+1**: All read and write-path queries batch-fetch existing records upfront, then assemble/upsert in JS — no per-item SELECT loops. Independent queries parallelized with `Promise.all()`
+- **Upsert via `onConflictDoUpdate`**: Write-path upserts (`upsertTickets`, `upsertSprints`, `upsertPullRequests`, `updateBranches`) use PostgreSQL `INSERT...ON CONFLICT DO UPDATE` — single query instead of SELECT + INSERT + per-row UPDATE loops
+- **JQL bulk fetch**: Jira ticket fetching uses `/rest/api/3/search` with `issueKey IN (...)` JQL — one HTTP request per 100 tickets instead of one per ticket
+- **SQL LIKE pre-filters**: Sprint commit queries (`getSprintCommits`, `getSprintMemberContributions`) pre-filter with `LIKE '%KEY%'` at SQL level before JS post-filter for exact match
+- **Batch PR metrics**: `computeAndCachePRMetricsBatch` computes TTFR/TTM/review rounds for all PRs in 2 bulk SELECTs + N UPDATEs (vs 5N SELECTs + N UPDATEs)
