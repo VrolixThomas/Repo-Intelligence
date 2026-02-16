@@ -61,6 +61,25 @@ function getParams(url: URL): URLSearchParams {
   return url.searchParams;
 }
 
+// ── Response trimming helpers ──────────────────────────────────────
+// Most trimming now happens at the DB level via { lite: true } in query opts.
+// trimTicketLite remains for endpoints that need an even smaller ticket shape
+// (e.g. lifecycle view drops description/subtasks/lastFetched too).
+
+function trimTicketLite(t: any) {
+  return {
+    id: t.id,
+    jiraKey: t.jiraKey,
+    summary: t.summary,
+    status: t.status,
+    assignee: t.assignee,
+    priority: t.priority,
+    ticketType: t.ticketType,
+    parentKey: t.parentKey,
+    labels: t.labels,
+  };
+}
+
 Bun.serve({
   port,
   static: {
@@ -97,7 +116,7 @@ Bun.serve({
       const [run, runTicketSummaries, runCommits] = await Promise.all([
         getRunById(runId),
         getTicketSummariesForRun(runId),
-        getCommitsForRun(runId),
+        getCommitsForRun(runId, { lite: true }),
       ]);
       if (!run) return json({ error: "Run not found" }, 404);
       const jiraKeys = new Set<string>();
@@ -106,8 +125,13 @@ Bun.serve({
           for (const k of c.jiraKeys.split(",")) jiraKeys.add(k.trim());
         }
       }
-      const ticketRows = await getTicketsByKeys([...jiraKeys]);
-      return json({ run, ticketSummaries: runTicketSummaries, commits: runCommits, tickets: ticketRows });
+      const ticketRows = await getTicketsByKeys([...jiraKeys], { lite: true });
+      return json({
+        run,
+        ticketSummaries: runTicketSummaries,
+        commits: runCommits,
+        tickets: ticketRows,
+      });
     }
 
     if (path === "/api/commits") {
@@ -125,7 +149,7 @@ Bun.serve({
       if (since) filter.since = since;
       if (until) filter.until = until;
       if (search) filter.search = search;
-      return json(await getCommitsPaginated(filter, page, pageSize));
+      return json(await getCommitsPaginated(filter, page, pageSize, { lite: true }));
     }
 
     if (path === "/api/team") {
@@ -143,7 +167,7 @@ Bun.serve({
       const pageSize = Number(params.get("pageSize") ?? "20");
       const [stats, commitData, memberBranches, memberTicketSummaries] = await Promise.all([
         getMemberStats(member.emails),
-        getMemberCommits(member.emails, page, pageSize),
+        getMemberCommits(member.emails, page, pageSize, { lite: true }),
         getMemberBranches(member.emails),
         getMemberTicketSummaries(member.emails, 5),
       ]);
@@ -161,8 +185,8 @@ Bun.serve({
       const params = getParams(url);
       const sprintIdParam = params.get("sprintId");
       const grouped = sprintIdParam
-        ? await getSprintTicketsGrouped(Number(sprintIdParam))
-        : await getReferencedTicketsGrouped();
+        ? await getSprintTicketsGrouped(Number(sprintIdParam), { lite: true })
+        : await getReferencedTicketsGrouped({ lite: true });
       const allKeys = Object.values(grouped).flat().map((t) => t.jiraKey);
       // Parallelize commit counts and lifecycle metrics
       const [commitCounts, lifecycleRows] = await Promise.all([
@@ -189,7 +213,14 @@ Bun.serve({
       const author = params.get("author");
       if (repo) filter.repo = repo;
       if (author) filter.authorEmail = author;
-      return json(await getBranchesWithCommits(filter));
+      const branchRows = await getBranchesWithCommits(filter, { lite: true });
+      return json(branchRows.map((b: any) => ({
+        ...b,
+        branchCommits: (b.branchCommits ?? []).map((c: any) => ({
+          ...c,
+          message: c.message?.split("\n")[0] ?? c.message,
+        })),
+      })));
     }
 
     if (path === "/api/filters") {
@@ -216,9 +247,9 @@ Bun.serve({
       if (!sprint) return json({ error: "Sprint not found" }, 404);
       // Parallelize independent queries
       const [sprintTicketList, sprintBranches, sprintCommits, ticketKeys] = await Promise.all([
-        getSprintTickets(sprintId),
-        getSprintBranches(sprintId),
-        getSprintCommits(sprintId),
+        getSprintTickets(sprintId, { lite: true }),
+        getSprintBranches(sprintId, { noRelations: true }),
+        getSprintCommits(sprintId, { lite: true }),
         getSprintTicketKeys(sprintId),
       ]);
       const commitCounts = await getTicketCommitCounts(ticketKeys);
@@ -243,7 +274,7 @@ Bun.serve({
       const params = getParams(url);
       const date = params.get("date");
       if (!date) return json({ error: "date parameter required" }, 400);
-      const activity = await getEnrichedDailyActivity(config.team, date);
+      const activity = await getEnrichedDailyActivity(config.team, date, { lite: true });
       return json(activity);
     }
 
@@ -261,7 +292,7 @@ Bun.serve({
     if (path === "/api/standup") {
       const params = getParams(url);
       const date = params.get("date") ?? new Date().toISOString().split("T")[0]!;
-      const data = await getStandupData(config.team, date);
+      const data = await getStandupData(config.team, date, { lite: true });
       return json(data);
     }
 
@@ -293,13 +324,13 @@ Bun.serve({
 
       // Enrich with ticket data
       const allKeys = metrics.map((m) => m.jiraKey);
-      const ticketRows = await getTicketsByKeys(allKeys);
-      const ticketMap = new Map(ticketRows.map((t) => [t.jiraKey, t]));
+      const ticketRows = await getTicketsByKeys(allKeys, { lite: true });
+      const ticketMap = new Map(ticketRows.map((t: any) => [t.jiraKey, t]));
 
       const enriched = metrics.map((m) => ({
         ...m,
         isStale: m.idleDays >= staleThreshold,
-        ticket: ticketMap.get(m.jiraKey) ?? null,
+        ticket: ticketMap.get(m.jiraKey) ? trimTicketLite(ticketMap.get(m.jiraKey)!) : null,
       }));
 
       // Sort
@@ -354,7 +385,7 @@ Bun.serve({
     const prDetailMatch = path.match(/^\/api\/pull-requests\/(\d+)$/);
     if (prDetailMatch) {
       const prRowId = Number(prDetailMatch[1]);
-      const detail = await getPullRequestDetail(prRowId);
+      const detail = await getPullRequestDetail(prRowId, { lite: true });
       if (!detail) return json({ error: "Pull request not found" }, 404);
       return json(detail);
     }
