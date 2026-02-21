@@ -10,7 +10,8 @@
     "db:reset": "supabase db reset",
     "db:studio": "bunx drizzle-kit studio",
     "db:test": "bun run db-test.ts",
-    "web": "bun --hot web.ts"
+    "web": "bun --hot web.ts",
+    "test": "bun test --preload ./tests/preload.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

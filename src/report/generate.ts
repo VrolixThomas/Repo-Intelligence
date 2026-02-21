@@ -217,6 +217,6 @@ export async function generateReport(input: ReportInput): Promise<ReportOutput> 
   return { filePath, markdown };
 }
 
-function escapeMarkdownTable(str: string): string {
+export function escapeMarkdownTable(str: string): string {
   return str.replace(/\|/g, "\\|").replace(/\n/g, " ");
 }

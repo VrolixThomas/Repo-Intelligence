@@ -39,7 +39,7 @@ export interface PromptInput {
 const MAX_PROMPT_CHARS = 50_000;
 const MAX_DESCRIPTION_CHARS = 500;
 
-function formatCommit(c: CommitInfo, diff?: CommitDiff): string {
+export function formatCommit(c: CommitInfo, diff?: CommitDiff): string {
   const lines: string[] = [];
   lines.push(`### ${c.shortSha} — ${c.message.split("\n")[0]}`);
   lines.push(`- Branch: ${c.branch}`);
@@ -54,7 +54,7 @@ function formatCommit(c: CommitInfo, diff?: CommitDiff): string {
   return lines.join("\n");
 }
 
-function formatTicket(t: TicketContext): string {
+export function formatTicket(t: TicketContext): string {
   const lines: string[] = [];
   lines.push(`### ${t.jiraKey}: ${t.summary ?? "(no summary)"}`);
   lines.push(`- Type: ${t.ticketType ?? "?"} | Status: ${t.status ?? "?"} | Priority: ${t.priority ?? "?"}`);
@@ -80,7 +80,7 @@ function formatTicket(t: TicketContext): string {
   return lines.join("\n");
 }
 
-function formatBranchDiff(bd: BranchDiffContext): string {
+export function formatBranchDiff(bd: BranchDiffContext): string {
   const lines: string[] = [];
   const sourceLabel = bd.baseSource === "pr" ? "from PR" : bd.baseSource === "fallback" ? "fallback" : "unknown";
   lines.push(`### ${bd.branchName} vs ${bd.baseBranch} (source: ${sourceLabel})`);
