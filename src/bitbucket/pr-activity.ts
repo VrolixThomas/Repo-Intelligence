@@ -51,7 +51,7 @@ export async function fetchPRActivity(
   return activities;
 }
 
-function parseActivityEntry(entry: any): PRActivityEntry | null {
+export function parseActivityEntry(entry: any): PRActivityEntry | null {
   if (entry.approval) {
     return {
       activityType: "approval",

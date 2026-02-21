@@ -46,6 +46,7 @@ import {
 import type { TicketLifecycleRow, PRFilter } from "./src/db/queries";
 import type { CommitFilter } from "./src/db/queries";
 import dashboard from "./src/web/index.html";
+import { trimTicketLite } from "./src/web/trim";
 
 const config = loadConfig();
 const port = config.web?.port ?? 3100;
@@ -59,25 +60,6 @@ function json(data: unknown, status = 200): Response {
 
 function getParams(url: URL): URLSearchParams {
   return url.searchParams;
-}
-
-// ── Response trimming helpers ──────────────────────────────────────
-// Most trimming now happens at the DB level via { lite: true } in query opts.
-// trimTicketLite remains for endpoints that need an even smaller ticket shape
-// (e.g. lifecycle view drops description/subtasks/lastFetched too).
-
-function trimTicketLite(t: any) {
-  return {
-    id: t.id,
-    jiraKey: t.jiraKey,
-    summary: t.summary,
-    status: t.status,
-    assignee: t.assignee,
-    priority: t.priority,
-    ticketType: t.ticketType,
-    parentKey: t.parentKey,
-    labels: t.labels,
-  };
 }
 
 Bun.serve({

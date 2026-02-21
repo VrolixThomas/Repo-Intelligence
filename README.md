@@ -152,6 +152,13 @@ bun run web.ts                           # Launch dashboard at http://localhost:
 bun --hot web.ts                         # Launch with hot reload
 ```
 
+### Testing
+
+```bash
+bun run test                             # Run all 220 unit tests across 19 files
+bun test --preload ./tests/preload.ts    # Run tests directly (equivalent)
+```
+
 ### Database management
 
 ```bash

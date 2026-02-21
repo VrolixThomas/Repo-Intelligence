@@ -51,7 +51,7 @@ export function extractAdfText(node: any): string {
   return text;
 }
 
-function parseStatusChanges(data: any): StatusChange[] {
+export function parseStatusChanges(data: any): StatusChange[] {
   const histories = data.changelog?.histories ?? [];
   const changes: StatusChange[] = [];
 
@@ -74,7 +74,7 @@ function parseStatusChanges(data: any): StatusChange[] {
   return changes;
 }
 
-function mapTicket(jiraKey: string, data: any): TicketData {
+export function mapTicket(jiraKey: string, data: any): TicketData {
   const fields = data.fields;
 
   // Extract last 5 comments

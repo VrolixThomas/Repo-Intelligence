@@ -143,7 +143,7 @@ export async function fetchAllPRComments(
   return bundles;
 }
 
-function parseComment(c: any): PRComment | null {
+export function parseComment(c: any): PRComment | null {
   const content = c.content?.raw ?? "";
   if (!content.trim()) return null;
 

@@ -51,6 +51,10 @@ bun run followup.ts --session <uuid>   # resume a Claude session directly
 bun run web.ts                         # launch dashboard (default port 3100)
 bun --hot web.ts                       # launch with hot reload
 
+# Testing
+bun run test                           # run all unit tests (220 tests across 19 files)
+bun test --preload ./tests/preload.ts  # direct equivalent
+
 # Database
 bun run db:push                        # push migrations to Supabase (remote)
 bun run db:reset                       # reset Supabase database
@@ -74,6 +78,32 @@ supabase/
     20260208000000_initial_schema.sql  # All 11 tables
     20260215000000_branches_unique_constraint.sql  # Unique index on branches(repo, name)
     20260215000000_add_performance_indexes.sql  # Performance indexes for commits + branches
+tests/
+  preload.ts                 # Test preload: sets dummy DATABASE_URL for module loading
+  fixtures/
+    git-data.ts              # Shared CommitInfo/BranchInfo/RepoScanResult factories
+    jira-responses.ts        # Shared Jira API response fixtures
+    config.ts                # Shared Config/TeamMember fixtures
+  unit/
+    extractJiraKeys.test.ts  # Jira key regex extraction from text
+    filterAllowedKeys.test.ts # Project key safety filter
+    extractAdfText.test.ts   # Jira ADF → plaintext recursive parser
+    parseStatusChanges.test.ts # Jira changelog → StatusChange[]
+    mapTicket.test.ts        # Raw Jira response → TicketData mapping
+    groupByTeamMember.test.ts # Commits/branches → per-member groups
+    config.test.ts           # buildEmailMap, URL builders, loadConfig
+    cron.test.ts             # calculateNextRunMs, formatNextRun
+    escapeMarkdownTable.test.ts # Markdown table escaping
+    formatCommit.test.ts     # formatCommit, formatTicket, formatBranchDiff
+    buildTicketPrompt.test.ts # Ticket-centric prompt assembly + size guards
+    buildSprintPrompts.test.ts # Sprint tech/general prompt builders
+    buildPrompt.test.ts      # Member-centric prompt assembly + size guards
+    chartUtils.test.ts       # scaleLinear, niceMax, generateTicks, fillDateGaps, formatShortDate
+    parseActivityEntry.test.ts # Bitbucket PR activity event parser
+    groupCommitsByTicket.test.ts # Ticket grouping: branch keys, message keys, orphans, dedup
+    parseComment.test.ts     # Bitbucket PR comment parser (inline, threaded, edge cases)
+    trimTicketLite.test.ts   # Web API response trimming (field inclusion/exclusion)
+    generateReport.test.ts   # Report generation with DB mocks (header, summaries, commits, ticket index)
 data/
   reports/                   # Generated markdown reports
 src/
@@ -85,6 +115,7 @@ src/
     diff.ts                  # Per-commit diff retrieval
     author.ts                # Group commits/branches by team member
     branch-context.ts        # PR detection, base branch resolution, checkout/restore
+    group-commits.ts         # Pure function: group commits by Jira ticket key + repo
   jira/
     client.ts                # Jira HTTP client (Basic Auth)
     tickets.ts               # Ticket fetching, ADF-to-plaintext, caching (1h TTL)
@@ -109,6 +140,7 @@ src/
   web/
     app.tsx                  # React SPA entry (hash-based routing, 12 views)
     styles.css               # Tailwind CSS
+    trim.ts                  # API response trimming helpers (trimTicketLite)
     components/
       Layout.tsx             # Main layout with navigation sidebar
       SprintSelector.tsx     # Sprint dropdown (global, affects ticket/branch views)
@@ -295,6 +327,17 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 - `idx_branches_jira_key` on `(jira_key)` — sprint-scoped branch queries
 - `idx_branches_active_author` on `(is_active, author_email)` — member stats, standup, branch view
 
+## Testing
+
+- **Framework**: Bun's built-in test runner (`bun:test`) — zero dependencies, fast execution
+- **Preload**: `tests/preload.ts` sets a dummy `DATABASE_URL` so modules that check it at import-time don't throw during pure function tests
+- **Fixtures**: `tests/fixtures/` contains factory functions (`makeCommit`, `makeBranch`, `makeJiraIssueResponse`, etc.) for reusable test data
+- **Unit tests**: `tests/unit/` — 220 tests across 19 files covering all pure functions, data transformations, prompt builders, chart utilities, Bitbucket activity/comment parsing, config loading, report generation (with DB mocks), and web API trimming
+- **DB mocking**: `generateReport.test.ts` uses `mock.module()` to mock DB query imports, enabling integration-level testing without a real database
+- **Extracted for testability**: `groupCommitsByTicket` moved from inline `scan.ts` to `src/git/group-commits.ts` (pure function, DB lookup passed as parameter). `trimTicketLite` moved from `web.ts` to `src/web/trim.ts`
+- **Pattern**: Tests import directly from source files (not barrel `index.ts`) when possible to avoid triggering heavy transitive imports
+- **Exported for testing**: `parseStatusChanges`, `mapTicket` (tickets.ts), `escapeMarkdownTable` (generate.ts), `formatCommit`, `formatTicket`, `formatBranchDiff` (prompt.ts), `parseActivityEntry` (pr-activity.ts), `parseComment` (comments.ts) — added `export` keyword + barrel re-exports
+
 ## Completed Phases
 
 1. Core scaffolding (git scanner, config, author grouping)
@@ -316,6 +359,7 @@ Bitbucket uses email + API token for Basic Auth (App Passwords were deprecated S
 17. Data accuracy fixes (`getSprintPRStats` repo-scoped PR matching, sprint burndown scoped to sprint branches via `getSprintDailyCommitCounts`, `getSprintBranches` filters on `isActive`)
 18. Dashboard payload reduction (API response trimming in `web.ts` — strip `description`/`commentsJson`/`dataJson`/`diffSummary`/nested arrays at serialization boundary, ~4MB→<500KB initial load)
 19. DB column selection (push column exclusion down to SQL — `QueryOpts { lite?: boolean; noRelations?: boolean }` on 13 query functions, `web.ts` passes `{ lite: true }` at 14 call sites, excludes `commentsJson`/`dataJson`/`diffSummary` at DB level to reduce Supabase egress, `noRelations` skips commit/ticket batch-fetches in `getSprintBranches`, removed dead `trimTicketKeepDesc`/`trimCommitLite` helpers)
+20. Unit test suite (bun:test, 220 tests across 19 files — pure function tests, DB-mocked integration tests, extracted testable modules. Includes: extractJiraKeys, filterAllowedKeys, extractAdfText, parseStatusChanges, mapTicket, groupByTeamMember, config/URL builders, cron scheduling (setSystemTime mocked), escapeMarkdownTable, formatCommit/formatTicket/formatBranchDiff, buildTicketPrompt, buildSprintPrompts, buildPrompt, chart utils, parseActivityEntry, groupCommitsByTicket, parseComment, trimTicketLite, generateReport with mock.module DB mocking)
 
 ## Key Gotchas
 

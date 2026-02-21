@@ -12,6 +12,7 @@
 import { loadConfig } from "./src/config";
 import { scanRepo, scanAllRepos } from "./src/git/scanner";
 import { groupByTeamMember } from "./src/git/author";
+import { groupCommitsByTicket as groupCommitsByTicketPure, type TicketWorkBundle } from "./src/git/group-commits";
 import { getCommitDiff, getCommitDiffs } from "./src/git/diff";
 import { fetchLatest, resolveBaseBranch, getAggregateBranchDiff, recordRepoState, checkoutBranch, restoreRepoState } from "./src/git/branch-context";
 import type { BranchDiffContext } from "./src/git/branch-context";
@@ -603,41 +604,16 @@ function printRepoResult(result: import("./src/git/scanner").RepoScanResult) {
   console.log();
 }
 
-interface TicketWorkBundle {
-  commits: import("./src/git/scanner").CommitInfo[];
-  branchNames: Set<string>;
-  authorEmails: Set<string>;
-}
-
 /**
  * Group commits by ticket key + repo.
  * Resolution order: branch jiraKey from DB > commit jiraKeys from message.
  * Orphan commits (no ticket) grouped under `branch:{branchName}`.
+ *
+ * Builds the branchJiraKeys lookup from DB, then delegates to the pure grouping function.
  */
 async function groupCommitsByTicket(
   results: import("./src/git/scanner").RepoScanResult[]
 ): Promise<Map<string, Map<string, TicketWorkBundle>>> {
-  const bundles = new Map<string, Map<string, TicketWorkBundle>>();
-
-  function addCommit(jiraKey: string, repoName: string, commit: import("./src/git/scanner").CommitInfo) {
-    let repoMap = bundles.get(jiraKey);
-    if (!repoMap) {
-      repoMap = new Map();
-      bundles.set(jiraKey, repoMap);
-    }
-    let work = repoMap.get(repoName);
-    if (!work) {
-      work = { commits: [], branchNames: new Set(), authorEmails: new Set() };
-      repoMap.set(repoName, work);
-    }
-    // Avoid duplicate commits
-    if (!work.commits.some((c) => c.sha === commit.sha)) {
-      work.commits.push(commit);
-    }
-    work.branchNames.add(commit.branch);
-    work.authorEmails.add(commit.authorEmail);
-  }
-
   // Build a branch → jiraKey lookup from DB
   const branchJiraKeys = new Map<string, string>(); // "repo::branch" → jiraKey
   for (const result of results) {
@@ -649,29 +625,7 @@ async function groupCommitsByTicket(
     }
   }
 
-  for (const result of results) {
-    for (const commit of result.commits) {
-      const keys = new Set<string>();
-
-      // Source 1: branch jiraKey from DB
-      const branchKey = branchJiraKeys.get(`${result.repoName}::${commit.branch}`);
-      if (branchKey) keys.add(branchKey);
-
-      // Source 2: commit message jiraKeys
-      for (const k of commit.jiraKeys) keys.add(k);
-
-      if (keys.size === 0) {
-        // Orphan: group under branch name as pseudo-key
-        addCommit(`branch:${commit.branch}`, result.repoName, commit);
-      } else {
-        for (const key of keys) {
-          addCommit(key, result.repoName, commit);
-        }
-      }
-    }
-  }
-
-  return bundles;
+  return groupCommitsByTicketPure(results, branchJiraKeys);
 }
 
 // ── Sprint Summary (CLI or auto-trigger) ────────────────────────────────────
